@@ -1,0 +1,120 @@
+package com.arvoreneural.app.data
+
+import android.content.ContentValues
+import android.content.Context
+import android.database.sqlite.SQLiteDatabase
+import android.database.sqlite.SQLiteOpenHelper
+import java.nio.ByteBuffer
+
+class Node(
+    val id: Long,
+    val parentId: Long,
+    val title: String,
+    val content: String,
+    val embedding: FloatArray,
+    val createdAt: Long
+)
+
+class Point(val id: Long, val series: String, val value: Double, val ts: Long)
+
+class Db(ctx: Context) : SQLiteOpenHelper(ctx, "arvore.db", null, 1) {
+
+    override fun onCreate(d: SQLiteDatabase) {
+        d.execSQL(
+            "CREATE TABLE nodes(id INTEGER PRIMARY KEY AUTOINCREMENT, parent_id INTEGER NOT NULL, " +
+                "title TEXT NOT NULL, content TEXT NOT NULL, embedding BLOB NOT NULL, created_at INTEGER NOT NULL)"
+        )
+        d.execSQL(
+            "CREATE TABLE points(id INTEGER PRIMARY KEY AUTOINCREMENT, series TEXT NOT NULL, " +
+                "value REAL NOT NULL, ts INTEGER NOT NULL)"
+        )
+    }
+
+    override fun onUpgrade(d: SQLiteDatabase, oldV: Int, newV: Int) {}
+
+    private fun toBlob(a: FloatArray): ByteArray {
+        val bb = ByteBuffer.allocate(a.size * 4)
+        bb.asFloatBuffer().put(a)
+        return bb.array()
+    }
+
+    private fun fromBlob(b: ByteArray): FloatArray {
+        val fb = ByteBuffer.wrap(b).asFloatBuffer()
+        val out = FloatArray(fb.remaining())
+        fb.get(out)
+        return out
+    }
+
+    @Synchronized
+    fun insertNode(parentId: Long, title: String, content: String, emb: FloatArray): Long {
+        val cv = ContentValues()
+        cv.put("parent_id", parentId)
+        cv.put("title", title)
+        cv.put("content", content)
+        cv.put("embedding", toBlob(emb))
+        cv.put("created_at", System.currentTimeMillis())
+        return writableDatabase.insert("nodes", null, cv)
+    }
+
+    @Synchronized
+    fun updateEmbedding(id: Long, emb: FloatArray) {
+        val cv = ContentValues()
+        cv.put("embedding", toBlob(emb))
+        writableDatabase.update("nodes", cv, "id=?", arrayOf(id.toString()))
+    }
+
+    @Synchronized
+    fun allNodes(): List<Node> {
+        val out = ArrayList<Node>()
+        val c = readableDatabase.rawQuery(
+            "SELECT id,parent_id,title,content,embedding,created_at FROM nodes ORDER BY id", null
+        )
+        c.use {
+            while (it.moveToNext()) {
+                out.add(
+                    Node(
+                        it.getLong(0), it.getLong(1), it.getString(2),
+                        it.getString(3), fromBlob(it.getBlob(4)), it.getLong(5)
+                    )
+                )
+            }
+        }
+        return out
+    }
+
+    @Synchronized
+    fun deleteNode(id: Long) {
+        val w = writableDatabase
+        w.beginTransaction()
+        try {
+            val c = w.rawQuery("SELECT parent_id FROM nodes WHERE id=?", arrayOf(id.toString()))
+            val p = c.use { if (it.moveToFirst()) it.getLong(0) else 0L }
+            w.execSQL("UPDATE nodes SET parent_id=? WHERE parent_id=?", arrayOf<Any>(p, id))
+            w.delete("nodes", "id=?", arrayOf(id.toString()))
+            w.setTransactionSuccessful()
+        } finally {
+            w.endTransaction()
+        }
+    }
+
+    @Synchronized
+    fun insertPoint(series: String, value: Double) {
+        val cv = ContentValues()
+        cv.put("series", series)
+        cv.put("value", value)
+        cv.put("ts", System.currentTimeMillis())
+        writableDatabase.insert("points", null, cv)
+    }
+
+    @Synchronized
+    fun points(series: String): List<Point> {
+        val out = ArrayList<Point>()
+        val c = readableDatabase.rawQuery(
+            "SELECT id,series,value,ts FROM points WHERE series=? ORDER BY id", arrayOf(series)
+        )
+        c.use {
+            while (it.moveToNext()) out.add(Point(it.getLong(0), it.getString(1), it.getDouble(2), it.getLong(3)))
+        }
+        return out
+    }
+}
