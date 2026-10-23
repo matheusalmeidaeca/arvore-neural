@@ -52,6 +52,29 @@ class Tree(private val db: Db, private val emb: Embedder) {
             .take(k)
     }
 
+    /** Conversa: pergunta (com "?") consulta a árvore; frase afirmativa é aprendida. */
+    fun chat(msg: String): String {
+        val text = msg.trim()
+        if (text.isEmpty()) return ""
+        val found = ask(text, 3).filter { it.second >= 0.15f }
+        if (text.contains("?")) {
+            if (found.isEmpty()) return "Ainda não sei nada sobre isso. Me ensine com uma frase (sem interrogação)."
+            val (best, s) = found[0]
+            val sb = StringBuilder()
+            sb.append(best.content.take(400)).append("\n(confiança ").append((s * 100).toInt()).append("%)")
+            if (found.size > 1) {
+                sb.append("\nTambém relacionado: ")
+                sb.append(found.drop(1).joinToString(" | ") { it.first.title })
+            }
+            return sb.toString()
+        }
+        learn(text)
+        if (found.isEmpty()) return "Aprendi! Assunto novo: abri um galho novo na árvore."
+        val (best, s) = found[0]
+        return if (s >= MIN_SIM) "Aprendi! Encaixei sob: " + best.title
+        else "Aprendi! Abri um galho novo (o mais parecido era: " + best.title + ")."
+    }
+
     private fun chunk(raw: String, max: Int = 500): List<String> {
         val out = mutableListOf<String>()
         for (p in raw.split(Regex("\\n\\s*\\n"))) {

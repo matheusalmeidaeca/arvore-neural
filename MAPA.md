@@ -18,14 +18,15 @@ App Android nativo que (1) organiza conhecimento numa árvore, (2) usa modelo de
 - [x] 3. Importar .txt e fatiar em trechos (`ai/Tree.kt` → `learnFile`, máx. 300 trechos)
 - [x] 4. Aprendizado em tempo real: texto novo é encaixado sob o nó mais parecido (similaridade ≥ 0,30) e o nó pai é ajustado (`Tree.learn`)
 - [x] 5. Prever/analisar números: tendência dos últimos 12 valores, reajustada a cada novo dado (`ai/Forecaster.kt`)
+- [x] 5.1 Conversa: aba "Conversa" para trocar mensagens com a árvore (`Tree.chat`). Pergunta (com `?`) busca na árvore; frase afirmativa é aprendida. Respostas são recuperação de trechos, não texto gerado.
 - [ ] 6. Transformer real: ONNX Runtime Mobile + modelo de embeddings multilíngue (ex.: MiniLM) em `app/src/main/assets`, criando `OnnxEmbedder : Embedder` com tokenizador WordPiece
-- [ ] 7. Polimento: ícone, gráfico da série, exportar/importar backup do banco, busca por ramo, APK assinado (release)
+- [ ] 7. Polimento: histórico da conversa salvo no banco, ícone, gráfico da série, exportar/importar backup do banco, busca por ramo, APK assinado (release)
 
 ## Arquivos
-- `app/src/main/java/com/arvoreneural/app/MainActivity.kt` — telas: Árvore, Aprender, Prever
+- `app/src/main/java/com/arvoreneural/app/MainActivity.kt` — telas: Conversa, Árvore, Aprender, Prever
 - `.../data/Db.kt` — tabelas `nodes` e `points`
 - `.../ai/Embedder.kt` — interface + HashEmbedder
-- `.../ai/Tree.kt` — lógica da árvore
+- `.../ai/Tree.kt` — lógica da árvore e conversa (`chat`)
 - `.../ai/Forecaster.kt` — previsão
 - `.github/workflows/build.yml` — build do APK
 

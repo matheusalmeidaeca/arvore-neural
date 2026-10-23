@@ -10,6 +10,14 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.Surface
+import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.ui.Alignment
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
@@ -59,8 +67,9 @@ class MainActivity : ComponentActivity() {
 fun App(db: Db, tree: Tree) {
     var tab by remember { mutableIntStateOf(0) }
     var version by remember { mutableIntStateOf(0) }
-    val labels = listOf("Árvore", "Aprender", "Prever")
-    val icons = listOf("🌳", "✍️", "📈")
+    val msgs = remember { mutableStateListOf<Msg>() }
+    val labels = listOf("Conversa", "Árvore", "Aprender", "Prever")
+    val icons = listOf("💬", "🌳", "✍️", "📈")
     Scaffold(
         bottomBar = {
             NavigationBar {
@@ -77,10 +86,70 @@ fun App(db: Db, tree: Tree) {
     ) { pad ->
         Box(Modifier.padding(pad).padding(16.dp).fillMaxSize()) {
             when (tab) {
-                0 -> TreeScreen(db, tree, version) { version++ }
-                1 -> LearnScreen(tree) { version++ }
+                0 -> ChatScreen(tree, msgs) { version++ }
+                1 -> TreeScreen(db, tree, version) { version++ }
+                2 -> LearnScreen(tree) { version++ }
                 else -> ForecastScreen(db)
             }
+        }
+    }
+}
+
+class Msg(val fromUser: Boolean, val text: String)
+
+@Composable
+fun ChatScreen(tree: Tree, msgs: MutableList<Msg>, onChange: () -> Unit) {
+    var input by remember { mutableStateOf("") }
+    val scope = rememberCoroutineScope()
+    val listState = rememberLazyListState()
+    LaunchedEffect(msgs.size) {
+        if (msgs.isNotEmpty()) listState.animateScrollToItem(msgs.size - 1)
+    }
+    Column(Modifier.fillMaxSize()) {
+        LazyColumn(
+            modifier = Modifier.weight(1f).fillMaxWidth(),
+            state = listState,
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            if (msgs.isEmpty()) {
+                item {
+                    Text("Converse comigo! Frases afirmativas eu aprendo. Perguntas (com ?) eu respondo com o que já sei.")
+                }
+            }
+            items(msgs) { m ->
+                Row(
+                    Modifier.fillMaxWidth(),
+                    horizontalArrangement = if (m.fromUser) Arrangement.End else Arrangement.Start
+                ) {
+                    Surface(
+                        color = if (m.fromUser) MaterialTheme.colorScheme.primaryContainer
+                        else MaterialTheme.colorScheme.surfaceVariant,
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier.widthIn(max = 300.dp)
+                    ) { Text(m.text, Modifier.padding(10.dp)) }
+                }
+            }
+        }
+        Row(Modifier.fillMaxWidth().padding(top = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+            OutlinedTextField(
+                value = input,
+                onValueChange = { input = it },
+                placeholder = { Text("Mensagem") },
+                modifier = Modifier.weight(1f)
+            )
+            Spacer(Modifier.width(8.dp))
+            Button(onClick = {
+                val t = input.trim()
+                if (t.isNotEmpty()) {
+                    input = ""
+                    msgs.add(Msg(true, t))
+                    scope.launch {
+                        val r = withContext(Dispatchers.IO) { tree.chat(t) }
+                        msgs.add(Msg(false, r))
+                        onChange()
+                    }
+                }
+            }) { Text("Enviar") }
         }
     }
 }
