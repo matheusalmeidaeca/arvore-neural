@@ -67,6 +67,7 @@ class MainActivity : ComponentActivity() {
         val db = Db(applicationContext)
         val tree = Tree(db, HashEmbedder())
         val lab = MiniLab(db)
+        tree.lab = lab
         setContent { MaterialTheme { App(db, tree, lab) } }
     }
 }
@@ -357,7 +358,7 @@ fun TransformerScreen(lab: MiniLab) {
         verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
         Text(
-            "Seu mini-transformer em Kotlin: " + lab.gpt.lay.n + " parâmetros (4 camadas, 128 dims, 4 cabeças, contexto 64). Treina com o texto que a árvore aprendeu. Deixe o app aberto durante o treino.",
+            "Seu mini-transformer em Kotlin: " + lab.gpt.lay.n + " parâmetros (4 camadas, 128 dims, 4 cabeças, contexto 64). Cada nó da árvore tem um vetor próprio dentro do transformer, somado aos dos seus ancestrais: a árvore faz parte do modelo. Aprende sozinho a cada frase que você ensina na Conversa; aqui você treina mais fundo. Deixe o app aberto durante o treino.",
             style = MaterialTheme.typography.bodyMedium
         )
         Text(status, style = MaterialTheme.typography.titleSmall)
@@ -368,22 +369,15 @@ fun TransformerScreen(lab: MiniLab) {
                     training = true
                     stop.set(false)
                     val msg = withContext(Dispatchers.Default) {
-                        val data = lab.corpus()
-                        if (data.size < 80) {
+                        if (lab.corpusSize() < 80) {
                             return@withContext "Ensine mais texto à árvore (mínimo ~80 caracteres) antes de treinar."
                         }
-                        val rnd = java.util.Random(System.nanoTime())
                         val t0 = System.currentTimeMillis()
-                        var i = 0
-                        while (i < 300 && !stop.get()) {
-                            val loss = lab.gpt.trainStep(data, 8, 1e-3f, rnd)
-                            i++
+                        lab.train(300, 8, -1L, stop) { i, loss ->
                             val sec = (System.currentTimeMillis() - t0) / 1000
                             val ls = "%.3f".format(loss)
                             status = "passo " + lab.gpt.step + " | perda " + ls + " | " + i + "/300 | " + sec + "s"
-                            if (i % 100 == 0) lab.save()
                         }
-                        lab.save()
                         val fin = "%.3f".format(lab.gpt.lastLoss)
                         "Treino concluído: " + lab.gpt.step + " passos no total, perda " + fin + "."
                     }
@@ -406,7 +400,7 @@ fun TransformerScreen(lab: MiniLab) {
                 busy = true
                 output = "Gerando…"
                 output = withContext(Dispatchers.Default) {
-                    p + lab.gpt.generate(p, 200, 0.8f, java.util.Random())
+                    p + lab.generateFree(p, 200)
                 }
                 busy = false
             }

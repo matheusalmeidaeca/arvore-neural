@@ -11,6 +11,9 @@ class Tree(private val db: Db, private val emb: Embedder) {
         const val MAX_CHUNKS = 400
     }
 
+    /** Transformer ligado à árvore (definido na inicialização do app). */
+    var lab: MiniLab? = null
+
     private val stamp = Regex("\\d{1,2}/\\d{1,2}/\\d{2,4}[ ,]+\\d{1,2}:\\d{2}(:\\d{2})?\\s*-?\\s*")
 
     fun learn(text: String): Long {
@@ -64,7 +67,15 @@ class Tree(private val db: Db, private val emb: Embedder) {
         if (text.contains("?")) {
             if (found.isEmpty()) return "Ainda não sei nada sobre isso. Me ensine com uma frase (sem interrogação)."
             val (best, s) = found[0]
-            val sb = StringBuilder(tidy(best.content, 300))
+            val sb = StringBuilder()
+            val l = lab
+            if (l != null) {
+                val gen = l.generateFor(best.id)
+                sb.append("🧠 [").append(l.gpt.step).append(" passos] ")
+                sb.append(if (gen.isEmpty()) "(ainda sem resposta)" else gen)
+                sb.append("\n🌳 ")
+            }
+            sb.append(tidy(best.content, 300))
             sb.append("\n(confiança ").append((s * 100).toInt()).append("%)")
             val rel = found.drop(1).filter { it.second >= 0.25f }
             if (rel.isNotEmpty()) {
@@ -73,11 +84,13 @@ class Tree(private val db: Db, private val emb: Embedder) {
             }
             return sb.toString()
         }
-        learn(text)
-        if (found.isEmpty()) return "Aprendi! Assunto novo: abri um galho novo na árvore."
+        val newId = learn(text)
+        if (newId > 0) lab?.learnInBackground(newId)
+        val extra = if (lab != null) "\n🧠 treinando o transformer com isso em segundo plano…" else ""
+        if (found.isEmpty()) return "Aprendi! Assunto novo: abri um galho novo na árvore." + extra
         val (best, s) = found[0]
-        return if (s >= MIN_SIM) "Aprendi! Encaixei sob: " + tidy(best.title, 60)
-        else "Aprendi! Abri um galho novo (o mais parecido era: " + tidy(best.title, 60) + ")."
+        return if (s >= MIN_SIM) "Aprendi! Encaixei sob: " + tidy(best.title, 60) + extra
+        else "Aprendi! Abri um galho novo (o mais parecido era: " + tidy(best.title, 60) + ")." + extra
     }
 
     /** Remove carimbos de data/hora e corta em fim de frase ou de palavra. */

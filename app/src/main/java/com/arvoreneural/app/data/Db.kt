@@ -124,7 +124,9 @@ class Db(ctx: Context) : SQLiteOpenHelper(ctx, "arvore.db", null, 3) {
 
     @Synchronized
     fun clearNodes() {
-        writableDatabase.delete("nodes", null, null)
+        val w = writableDatabase
+        w.delete("nodes", null, null)
+        w.execSQL("DELETE FROM sqlite_sequence WHERE name='nodes'")
     }
 
     @Synchronized

@@ -1,6 +1,8 @@
 package com.arvoreneural.app.ai
 
 import com.arvoreneural.app.data.Db
+import com.arvoreneural.app.data.Node
+import java.util.concurrent.atomic.AtomicBoolean
 import java.nio.ByteBuffer
 import java.util.Arrays
 import java.util.Random
@@ -21,7 +23,11 @@ import kotlin.math.tanh
  * Tamanho igual ao mini.py: T=64, C=128, H=4, L=4. Os pesos aprendidos ficam no banco de dados.
  */
 
-class MiniGptConfig(val v: Int, val t: Int = 64, val c: Int = 128, val h: Int = 4, val l: Int = 4)
+class MiniGptConfig(
+    val v: Int, val t: Int = 64, val c: Int = 128, val h: Int = 4, val l: Int = 4,
+    /** quantidade de "vetores de galho": cada nó da árvore usa um deles */
+    val s: Int = 1024
+)
 
 /** Vocabulário fixo (o mini.py montava pelo texto; aqui precisa ser fixo para treinar aos poucos). */
 object Vocab {
@@ -60,6 +66,7 @@ class Layout(cfg: MiniGptConfig) {
 
     val tok = alloc(cfg.v * c)
     val pos = alloc(cfg.t * c)
+    val node = alloc(cfg.s * c)
     val ln1g = IntArray(nl)
     val ln1b = IntArray(nl)
     val wqkv = IntArray(nl)
@@ -228,12 +235,19 @@ class Work(cfg: MiniGptConfig, private val lay: Layout) {
     private val dbn = FloatArray(T * C)
     private val dgl = FloatArray(T * 4 * C)
     private val dpTmp = FloatArray(T)
+    private val ns = FloatArray(C)
 
-    fun forward(w: FloatArray, x: IntArray, nn: Int) {
+    /** slots = caminho do nó na árvore: a soma dos vetores de galho condiciona todas as posições. */
+    fun forward(w: FloatArray, x: IntArray, nn: Int, slots: IntArray) {
+        Arrays.fill(ns, 0f)
+        for (sl in slots) {
+            val so = lay.node + sl * C
+            for (i in 0 until C) ns[i] += w[so + i]
+        }
         for (t in 0 until nn) {
             val ro = lay.tok + x[t] * C
             val po = lay.pos + t * C
-            for (i in 0 until C) hs[0][t * C + i] = w[ro + i] + w[po + i]
+            for (i in 0 until C) hs[0][t * C + i] = w[ro + i] + w[po + i] + ns[i]
         }
         val sc = 1f / sqrt(D.toFloat())
         for (l in 0 until L) {
@@ -290,8 +304,8 @@ class Work(cfg: MiniGptConfig, private val lay: Layout) {
     }
 
     /** Soma da entropia cruzada dos nn tokens (sem dividir). */
-    fun lossOf(w: FloatArray, x: IntArray, y: IntArray, nn: Int): Float {
-        forward(w, x, nn)
+    fun lossOf(w: FloatArray, x: IntArray, y: IntArray, nn: Int, slots: IntArray): Float {
+        forward(w, x, nn, slots)
         var tot = 0f
         for (t in 0 until nn) {
             val r = t * V
@@ -305,8 +319,8 @@ class Work(cfg: MiniGptConfig, private val lay: Layout) {
     }
 
     /** Forward + backward. Acumula o gradiente (multiplicado por scale) em g. Devolve a soma da perda. */
-    fun trainSeq(w: FloatArray, x: IntArray, y: IntArray, nn: Int, scale: Float): Float {
-        forward(w, x, nn)
+    fun trainSeq(w: FloatArray, x: IntArray, y: IntArray, nn: Int, scale: Float, slots: IntArray): Float {
+        forward(w, x, nn, slots)
         var tot = 0f
         for (t in 0 until nn) {
             val r = t * V
@@ -381,6 +395,11 @@ class Work(cfg: MiniGptConfig, private val lay: Layout) {
                 g[po + i] += dh[t * C + i]
             }
         }
+        for (i in 0 until C) {
+            var sum = 0f
+            for (t in 0 until nn) sum += dh[t * C + i]
+            for (sl in slots) g[lay.node + sl * C + i] += sum
+        }
         return tot
     }
 }
@@ -433,24 +452,21 @@ class MiniGpt(val cfg: MiniGptConfig) {
 
     fun reset() = initWeights(Random(System.nanoTime()))
 
-    /** Um passo de treino (AdamW, como no mini.py). Devolve a perda média por caractere. */
-    fun trainStep(data: IntArray, batch: Int, lr: Float, rnd: Random): Float {
-        val T = cfg.t
-        require(data.size > T + 1) { "texto curto demais" }
-        val starts = IntArray(batch) { rnd.nextInt(data.size - T - 1) }
+    /** Um passo de treino (AdamW, como no mini.py) sobre as sequências dadas. Devolve a perda média por caractere. */
+    fun trainBatch(seqs: List<Seq>, lr: Float): Float {
+        var tokens = 0
+        for (q in seqs) tokens += q.x.size
+        val scale = 1f / tokens
         for (wk in works) Arrays.fill(wk.g, 0f)
         val losses = FloatArray(nThreads)
-        val scale = 1f / (T * batch)
         val tasks = (0 until nThreads).map { ti ->
             Callable<Unit> {
                 val wk = works[ti]
                 var loss = 0f
                 var b = ti
-                while (b < batch) {
-                    val s = starts[b]
-                    val x = data.copyOfRange(s, s + T)
-                    val y = data.copyOfRange(s + 1, s + T + 1)
-                    loss += wk.trainSeq(w, x, y, T, scale)
+                while (b < seqs.size) {
+                    val q = seqs[b]
+                    loss += wk.trainSeq(w, q.x, q.y, q.x.size, scale, q.slots)
                     b += nThreads
                 }
                 losses[ti] = loss
@@ -483,35 +499,35 @@ class MiniGpt(val cfg: MiniGptConfig) {
         }
         var total = 0f
         for (x in losses) total += x
-        val mean = total / (T * batch)
+        val mean = total / tokens
         step++
         lastLoss = mean
         return mean
     }
 
-    fun generate(prompt: String, maxNew: Int, temp: Float, rnd: Random): String {
+    /**
+     * Gera texto. slots = galho da árvore que condiciona a geração (vazio = livre).
+     * Começa com "\n" (início de nó) e, com stopAtNewline, para quando o modelo encerra o nó.
+     */
+    fun generate(slots: IntArray, prompt: String, maxNew: Int, temp: Float, rnd: Random, stopAtNewline: Boolean): String {
         val T = cfg.t
         val V = cfg.v
         val ids = ArrayList<Int>()
-        val p = Vocab.encode(prompt)
-        if (p.isEmpty()) {
-            ids.add(0)
-        } else {
-            for (x in p) ids.add(x)
-        }
+        ids.add(0)
+        for (x in Vocab.encode(prompt)) ids.add(x)
         val wk = works[0]
         val out = StringBuilder()
         val probs = FloatArray(V)
         for (k in 0 until maxNew) {
             val nn = min(ids.size, T)
             val ctx = IntArray(nn) { ids[ids.size - nn + it] }
-            wk.forward(w, ctx, nn)
+            wk.forward(w, ctx, nn, slots)
             val off = (nn - 1) * V
             var mx = wk.logits[off]
             for (j in 1 until V) if (wk.logits[off + j] > mx) mx = wk.logits[off + j]
             var s = 0f
             for (j in 0 until V) {
-                val e = exp((wk.logits[off + j] - mx) / temp)
+                val e = if (j == 0 && stopAtNewline && out.length < 8) 0f else exp((wk.logits[off + j] - mx) / temp)
                 probs[j] = e
                 s += e
             }
@@ -524,6 +540,7 @@ class MiniGpt(val cfg: MiniGptConfig) {
                     break
                 }
             }
+            if (pick == 0 && stopAtNewline) break
             ids.add(pick)
             out.append(Vocab.chars[pick])
         }
@@ -531,9 +548,9 @@ class MiniGpt(val cfg: MiniGptConfig) {
     }
 
     private fun meta(): ByteArray {
-        val bb = ByteBuffer.allocate(9 * 4)
+        val bb = ByteBuffer.allocate(10 * 4)
         bb.putInt(1); bb.putInt(step); bb.putFloat(lastLoss); bb.putInt(lay.n)
-        bb.putInt(cfg.v); bb.putInt(cfg.t); bb.putInt(cfg.c); bb.putInt(cfg.h); bb.putInt(cfg.l)
+        bb.putInt(cfg.v); bb.putInt(cfg.t); bb.putInt(cfg.c); bb.putInt(cfg.h); bb.putInt(cfg.l); bb.putInt(cfg.s)
         return bb.array()
     }
 
@@ -544,7 +561,7 @@ class MiniGpt(val cfg: MiniGptConfig) {
     /** Carrega os pesos salvos no banco; devolve false se não houver ou se o tamanho não bater. */
     fun load(db: Db): Boolean {
         val mb = db.loadModelMeta() ?: return false
-        if (mb.size < 36) return false
+        if (mb.size < 40) return false
         val bb = ByteBuffer.wrap(mb)
         bb.getInt()
         val st = bb.getInt()
@@ -555,7 +572,8 @@ class MiniGpt(val cfg: MiniGptConfig) {
         val c = bb.getInt()
         val h = bb.getInt()
         val l = bb.getInt()
-        if (n != lay.n || v != cfg.v || t != cfg.t || c != cfg.c || h != cfg.h || l != cfg.l) return false
+        val sl = bb.getInt()
+        if (n != lay.n || v != cfg.v || t != cfg.t || c != cfg.c || h != cfg.h || l != cfg.l || sl != cfg.s) return false
         if (!db.loadModelWeights(w)) {
             initWeights(Random(1))
             return false
@@ -566,47 +584,143 @@ class MiniGpt(val cfg: MiniGptConfig) {
     }
 }
 
-/** Liga o transformer ao banco: texto de treino = tudo que a árvore aprendeu. */
+class Seq(val slots: IntArray, val x: IntArray, val y: IntArray)
+
+class Doc(val id: Long, val slots: IntArray, val ids: IntArray)
+
+/**
+ * A árvore DENTRO do transformer: cada nó tem um vetor próprio (vetor de galho). O vetor de um nó
+ * é somado aos vetores de todos os seus ancestrais, então a hierarquia da árvore vira parte do modelo.
+ * Treino e respostas usam o galho do nó; o texto de cada nó é o que o modelo aprende a reproduzir.
+ */
 class MiniLab(private val db: Db) {
     val gpt = MiniGpt(MiniGptConfig(v = Vocab.size))
+    val lock = Any()
+    private val bg = Executors.newSingleThreadExecutor { r -> Thread(r).also { it.isDaemon = true } }
 
     init {
         gpt.load(db)
     }
 
-    fun corpus(): IntArray = Vocab.encode(db.allNodes().joinToString("\n") { it.content })
+    private fun slotOf(id: Long): Int = (id % gpt.cfg.s).toInt()
 
-    fun save() = gpt.save(db)
+    private fun pathSlots(byId: Map<Long, Node>, id: Long): IntArray {
+        val out = ArrayList<Int>()
+        var cur = byId[id]
+        var guard = 0
+        while (cur != null && guard < 8) {
+            out.add(slotOf(cur.id))
+            cur = byId[cur.parentId]
+            guard++
+        }
+        return out.toIntArray()
+    }
+
+    private fun docs(): List<Doc> {
+        val nodes = db.allNodes()
+        val byId = HashMap<Long, Node>()
+        for (n in nodes) byId[n.id] = n
+        val out = ArrayList<Doc>()
+        for (n in nodes) {
+            val enc = Vocab.encode(n.content)
+            if (enc.isEmpty()) continue
+            val ids = IntArray(enc.size + 2)
+            System.arraycopy(enc, 0, ids, 1, enc.size)
+            out.add(Doc(n.id, pathSlots(byId, n.id), ids))
+        }
+        return out
+    }
+
+    fun corpusSize(): Int {
+        var total = 0
+        for (d in docs()) total += d.ids.size
+        return total
+    }
+
+    private fun sample(docs: List<Doc>, focus: Doc?, batch: Int, rnd: Random): List<Seq> {
+        val t = gpt.cfg.t
+        val out = ArrayList<Seq>()
+        for (b in 0 until batch) {
+            val d = if (focus != null && b % 2 == 0) focus else docs[rnd.nextInt(docs.size)]
+            val len = d.ids.size
+            val nn = min(t, len - 1)
+            val start = rnd.nextInt(len - nn)
+            out.add(Seq(d.slots, d.ids.copyOfRange(start, start + nn), d.ids.copyOfRange(start + 1, start + nn + 1)))
+        }
+        return out
+    }
+
+    /** Treina `steps` passos. O modelo só fica travado durante cada passo, então a conversa pode responder no meio. */
+    fun train(steps: Int, batch: Int, focusId: Long, stop: AtomicBoolean?, onStep: (Int, Float) -> Unit): Int {
+        val ds = docs()
+        if (ds.isEmpty()) return 0
+        val focus = ds.firstOrNull { it.id == focusId }
+        val rnd = Random(System.nanoTime())
+        var i = 0
+        while (i < steps && (stop == null || !stop.get())) {
+            val seqs = sample(ds, focus, batch, rnd)
+            val loss = synchronized(lock) { gpt.trainBatch(seqs, 1e-3f) }
+            i++
+            onStep(i, loss)
+            if (i % 100 == 0) synchronized(lock) { gpt.save(db) }
+        }
+        synchronized(lock) { gpt.save(db) }
+        return i
+    }
+
+    /** Aprendizado em tempo real: logo depois de um nó novo, treina alguns passos em segundo plano. */
+    fun learnInBackground(nodeId: Long, steps: Int = 8) {
+        bg.execute {
+            try {
+                train(steps, 8, nodeId, null) { _, _ -> }
+            } catch (e: Exception) {
+            }
+        }
+    }
+
+    /** Resposta do transformer condicionada ao galho do nó escolhido pela árvore. */
+    fun generateFor(nodeId: Long, maxNew: Int = 120): String {
+        val byId = HashMap<Long, Node>()
+        for (n in db.allNodes()) byId[n.id] = n
+        val slots = pathSlots(byId, nodeId)
+        return synchronized(lock) { gpt.generate(slots, "", maxNew, 0.7f, Random(), true) }.trim()
+    }
+
+    fun generateFree(prompt: String, maxNew: Int): String =
+        synchronized(lock) { gpt.generate(IntArray(0), prompt, maxNew, 0.8f, Random(), false) }
 
     fun reset() {
-        gpt.reset()
-        db.clearModel()
+        synchronized(lock) {
+            gpt.reset()
+            db.clearModel()
+        }
     }
 }
 
-/** Compara o gradiente calculado à mão com o gradiente numérico, num modelo minúsculo. */
+/** Compara o gradiente calculado à mão com o gradiente numérico, num modelo minúsculo (inclui vetores de galho). */
 fun miniSelfTest(): String {
-    val cfg = MiniGptConfig(v = 7, t = 6, c = 8, h = 2, l = 2)
+    val cfg = MiniGptConfig(v = 7, t = 6, c = 8, h = 2, l = 2, s = 5)
     val lay = Layout(cfg)
     val w = FloatArray(lay.n)
     val rnd = Random(3)
     for (i in w.indices) w[i] = (rnd.nextGaussian() * 0.3).toFloat()
     val wk = Work(cfg, lay)
+    val slots = intArrayOf(1, 3)
     var worst = 0f
     for (len in intArrayOf(6, 4)) {
         val x = IntArray(6) { rnd.nextInt(7) }
         val y = IntArray(6) { rnd.nextInt(7) }
         Arrays.fill(wk.g, 0f)
-        wk.trainSeq(w, x, y, len, 1f)
+        wk.trainSeq(w, x, y, len, 1f, slots)
         val ana = wk.g.copyOf()
-        for (k in 0 until 40) {
-            val i = rnd.nextInt(w.size)
+        for (k in 0 until 60) {
+            val i = if (k < 20) lay.node + rnd.nextInt(cfg.s * cfg.c) else rnd.nextInt(w.size)
             val old = w[i]
             val eps = 1e-2f
             w[i] = old + eps
-            val lp = wk.lossOf(w, x, y, len)
+            val lp = wk.lossOf(w, x, y, len, slots)
             w[i] = old - eps
-            val lm = wk.lossOf(w, x, y, len)
+            val lm = wk.lossOf(w, x, y, len, slots)
             w[i] = old
             val num = (lp - lm) / (2f * eps)
             val err = abs(num - ana[i]) / max(0.05f, abs(num) + abs(ana[i]))

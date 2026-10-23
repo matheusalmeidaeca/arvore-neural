@@ -20,7 +20,8 @@ App Android nativo que (1) organiza conhecimento numa árvore, (2) usa modelo de
 - [x] 5. Prever/analisar números: tendência dos últimos 12 valores, reajustada a cada novo dado (`ai/Forecaster.kt`)
 - [x] 5.1 Conversa: aba "Conversa" para trocar mensagens com a árvore (`Tree.chat`). Pergunta (com `?`) busca na árvore; frase afirmativa é aprendida. Respostas são recuperação de trechos, não texto gerado.
 - [x] 6. Transformer próprio: port do mini.py (GPT de caracteres, T=64, C=128, H=4, L=4, AdamW) em Kotlin puro, com backpropagation escrito à mão (`ai/MiniTransformer.kt`). Treina no celular com o texto da árvore; pesos salvos no banco (versão 3). Aba "Transformer": treinar, gerar texto, autoteste do gradiente.
-- [ ] 6.1 Ligar o transformer à Conversa (responder gerando texto) e usar seus vetores internos como embedding da árvore (no lugar do HashEmbedder)
+- [x] 6.1 Árvore dentro do transformer: cada nó tem um vetor de galho no modelo (somado aos dos ancestrais); treino e respostas usam o galho do nó; frases novas na Conversa treinam o modelo em segundo plano; resposta da Conversa = 🧠 geração do transformer + 🌳 texto do nó
+- [ ] 6.2 Usar os vetores internos do transformer para escolher/encaixar nós (no lugar do HashEmbedder) e cache de atenção (KV) para gerar mais rápido
 - [x] 5.2 Importador de WhatsApp (tira data/hora/nome, junta mensagens seguidas, filtro por nome), respostas limpas (`tidy`), histórico da conversa salvo (banco versão 2) e botão "Apagar toda a árvore"
 - [ ] 7. Polimento: ícone, gráfico da série, exportar/importar backup do banco, busca por ramo, APK assinado (release)
 
@@ -37,6 +38,7 @@ App Android nativo que (1) organiza conhecimento numa árvore, (2) usa modelo de
 ## O que isto é (e não é)
 - A árvore é uma memória com busca por similaridade (HashEmbedder: contagem de palavras).
 - O transformer é um GPT de caracteres de verdade, escrito à mão em Kotlin, treinado do zero no celular. É pequeno (~0,85 milhão de parâmetros) e começa gerando texto sem sentido; melhora devagar com mais texto e mais passos.
+- Dentro do modelo, a árvore aparece como vetores de galho: nó filho = vetor próprio + vetores dos ancestrais.
 - Os pesos são criados pelo treino e guardados no banco do app. O que vai no APK é só o código.
 
 ## Limites conhecidos
