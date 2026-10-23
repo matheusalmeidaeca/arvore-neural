@@ -30,7 +30,13 @@ App Android nativo que (1) organiza conhecimento numa árvore, (2) usa modelo de
   - Resposta da Conversa: UMA só. O prompt é o diálogo recente + `@a `; a árvore escolhe o galho (vetor de galho do transformer). Se o modelo ainda está imaturo (menos de 300 passos ou perda >= 1,9), a resposta vem da memória da árvore ("Lembro disto: …") com aviso.
   - Osmose: (a) tudo que o usuário escreve na Conversa entra no corpus; afirmações viram nós; (b) laço de treino em segundo plano enquanto o app está aberto (10 passos, lote 4, descansa o dobro do tempo; pausa com bateria < 40% sem tomada ou celular >= 41 °C); (c) compartilhar texto/arquivo .txt de outro app com o Árvore Neural absorve (corpus + até 15–20 nós); (d) botão 👍 nas respostas guarda o trecho do diálogo (3 cópias).
   - Pesos só são gravados no banco a cada ~200 passos, ao pausar o app ou ao parar o treino manual (evita desgastar o armazenamento).
-- [ ] 8. Polimento: ícone, gráfico da série, exportar/importar backup do banco, busca por ramo, APK assinado (release), cache de atenção (KV) para responder mais rápido
+- [x] 7.1 v7.1 — segundo plano, backup, assinatura fixa:
+  - `Engine.kt` (object): db, árvore, lab e osmose, mensagens da conversa, treino manual, rascunhos e mensagens das telas. Vive no processo, não na tela: trocar de aba não cancela resposta, treino nem importação (usam `Engine.scope`).
+  - `TrainService.kt`: serviço em primeiro plano (tipo specialUse) com notificação fixa e botão "Desligar osmose". Sobe quando a osmose está ligada, há resposta pendente ou treino manual; some sozinho quando não há trabalho. A osmose agora treina também com o app em segundo plano (mantém as travas: bateria < 40% sem tomada, >= 41 °C). WAKE_LOCK parcial só enquanto há trabalho.
+  - Backup: Aprender › Backup salva/restaura o arquivo `arvore.db` inteiro (pesos, corpus, árvore, conversa). Restaurar fecha o app (`frozen` impede gravar por cima).
+  - Assinatura: `app/build.gradle.kts` usa `arvore.jks` na raiz se existir; o workflow grava o arquivo a partir dos Secrets KS_BASE64, KS_PASS, KS_ALIAS, KS_KEYPASS e roda `assembleRelease`. Sem Secrets, cai em `assembleDebug`. `*.jks` está no .gitignore.
+  - A Activity não é mais recriada ao girar a tela (`configChanges`).
+- [ ] 8. Polimento: ícone, gráfico da série, busca por ramo, cache de atenção (KV) para responder mais rápido
 
 ## Arquivos
 - `app/src/main/java/com/arvoreneural/app/MainActivity.kt` — telas: Conversa, Árvore, Aprender, Prever
@@ -39,6 +45,8 @@ App Android nativo que (1) organiza conhecimento numa árvore, (2) usa modelo de
 - `.../ai/Tree.kt` — lógica da árvore e conversa (`chat`)
 - `.../ai/MiniTransformer.kt` — transformer próprio (modelo, treino, geração, salvar/carregar)
 - `.../ai/Importer.kt` (inclui `massBlocks` para o treino em massa) — leitura de conversas exportadas do WhatsApp
+- `.../Engine.kt` — estado do app fora das telas, treino manual, conversa, backup
+- `.../TrainService.kt` — serviço em primeiro plano
 - `.../ai/Osmose.kt` — aprendizado contínuo, absorção de textos/conversas, resposta única da Conversa, 👍
 - `.../ai/Forecaster.kt` — previsão
 - `.github/workflows/build.yml` — build do APK
@@ -50,7 +58,7 @@ App Android nativo que (1) organiza conhecimento numa árvore, (2) usa modelo de
 - Os pesos são criados pelo treino e guardados no banco do app. O que vai no APK é só o código.
 
 ## Limites conhecidos
-- Este código foi escrito sem compilar no ambiente do Claude: o primeiro build pode apontar erros. Se falhar, copie o log do passo "Compilar APK debug" e envie ao Claude.
+- Este código foi escrito sem compilar no ambiente do Claude: o primeiro build pode apontar erros. Se falhar, copie o log do passo "Compilar APK" e envie ao Claude.
 - HashEmbedder entende palavras parecidas, não significado. O item 6.1 melhora isso.
 - O treino em Kotlin puro é bem mais lento que o PyTorch do Termux. Use batch pequeno (8) e deixe o app aberto. Vocabulário fixo (ASCII + acentos do português): outros caracteres são ignorados.
 - O gradiente escrito à mão foi conferido com gradiente numérico (erro ~1e-5) numa versão de referência em Python; o botão "Autoteste" refaz essa conferência no próprio código Kotlin.
@@ -62,9 +70,9 @@ App Android nativo que (1) organiza conhecimento numa árvore, (2) usa modelo de
 4. Se o modelo ainda não amadureceu, a resposta é o texto do nó mais parecido (pergunta) ou "Anotado." (afirmação), com aviso.
 
 ## Limites conhecidos da v7
-- Código escrito sem compilar no ambiente do Claude (sem Kotlin/Android SDK lá). A lógica nova de diálogo, prompt e migração de pesos foi conferida num porte em Python; o resto precisa do primeiro build. Se falhar, mande o log do passo "Compilar APK debug".
+- Código escrito sem compilar no ambiente do Claude (sem Kotlin/Android SDK lá). A lógica nova de diálogo, prompt e migração de pesos foi conferida num porte em Python; o resto precisa do primeiro build. Se falhar, mande o log do passo "Compilar APK".
 - Contexto 192 deixa cada passo de treino e cada resposta mais lentos que na v6 (a geração ainda recalcula tudo a cada caractere; falta o cache KV).
 - O modelo continua pequeno (~1 milhão de parâmetros): aprende o jeito de falar, não raciocina.
 - O Android não deixa o app ler mensagens de outros apps sozinho: o caminho seguro é compartilhar/exportar.
-- A osmose só treina com o app aberto. Em segundo plano ela salva e para.
+- A osmose treina também em segundo plano (serviço com notificação). Alguns fabricantes ainda matam o serviço se a bateria do app não estiver em "Sem restrições".
 - Mudar "A IA fala como eu" só vale para importações novas; o que já está no corpus mantém os papéis antigos.

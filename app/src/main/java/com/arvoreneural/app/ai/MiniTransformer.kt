@@ -695,8 +695,11 @@ class MiniLab(private val db: Db) {
         return n
     }
 
+    @Volatile var frozen = false
+
     fun saveNow() {
-        synchronized(lock) { gpt.save(db) }
+        if (frozen) return
+        synchronized(lock) { if (!frozen) gpt.save(db) }
     }
 
     fun clearCorpus() {
@@ -741,9 +744,9 @@ class MiniLab(private val db: Db) {
             val loss = synchronized(lock) { gpt.trainBatch(seqs, 1e-3f) }
             i++
             onStep(i, loss)
-            if (i % 100 == 0) synchronized(lock) { gpt.save(db) }
+            if (i % 100 == 0 && !frozen) synchronized(lock) { gpt.save(db) }
         }
-        if (saveAtEnd) synchronized(lock) { gpt.save(db) }
+        if (saveAtEnd && !frozen) synchronized(lock) { gpt.save(db) }
         return i
     }
 

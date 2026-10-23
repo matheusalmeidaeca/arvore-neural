@@ -11,10 +11,31 @@ android {
         applicationId = "com.arvoreneural.app"
         minSdk = 26
         targetSdk = 34
-        versionCode = 2
-        versionName = "2.0"
+        versionCode = 3
+        versionName = "7.1"
     }
-    buildTypes { release { isMinifyEnabled = false } }
+    // Chave fixa: o workflow grava arvore.jks na raiz a partir dos Secrets do GitHub.
+    // Sem a chave, o build cai na assinatura de depuração (e o APK não atualiza por cima do antigo).
+    val ksFile = rootProject.file("arvore.jks")
+    signingConfigs {
+        create("fixa") {
+            if (ksFile.exists()) {
+                storeFile = ksFile
+                storePassword = System.getenv("KS_PASS")
+                keyAlias = System.getenv("KS_ALIAS")
+                keyPassword = System.getenv("KS_KEYPASS") ?: System.getenv("KS_PASS")
+            }
+        }
+    }
+    buildTypes {
+        release {
+            isMinifyEnabled = false
+            signingConfig = if (ksFile.exists()) signingConfigs.getByName("fixa") else signingConfigs.getByName("debug")
+        }
+        debug {
+            if (ksFile.exists()) signingConfig = signingConfigs.getByName("fixa")
+        }
+    }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17

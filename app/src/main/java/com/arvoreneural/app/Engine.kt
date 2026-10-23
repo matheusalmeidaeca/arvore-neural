@@ -1,0 +1,229 @@
+package com.arvoreneural.app
+
+import android.content.Context
+import android.content.Intent
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
+import androidx.core.content.ContextCompat
+import com.arvoreneural.app.ai.HashEmbedder
+import com.arvoreneural.app.ai.MiniLab
+import com.arvoreneural.app.ai.Osmose
+import com.arvoreneural.app.ai.Tree
+import com.arvoreneural.app.data.Db
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import java.io.File
+import java.util.concurrent.atomic.AtomicBoolean
+
+/** Estado da aba Transformer. Vive no Engine, então trocar de aba não perde nada. */
+class TState {
+    var status by mutableStateOf("")
+    var training by mutableStateOf(false)
+    var busy by mutableStateOf(false)
+    var output by mutableStateOf("")
+    var corpusInfo by mutableStateOf("")
+    var prompt by mutableStateOf("")
+    var from by mutableStateOf("")
+    val stop = AtomicBoolean(false)
+}
+
+/**
+ * v7.1: tudo que não pode morrer ao trocar de aba mora aqui (processo inteiro), não nas telas.
+ * Respostas, treino manual e importações rodam no `scope` do Engine; o TrainService mantém o processo vivo.
+ */
+object Engine {
+    lateinit var db: Db
+    lateinit var tree: Tree
+    lateinit var lab: MiniLab
+    lateinit var osmose: Osmose
+    @Volatile var ready = false
+    private lateinit var appCtx: Context
+
+    val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    val msgs = mutableStateListOf<Msg>()
+    var liked by mutableStateOf(setOf<Int>())
+    var pending by mutableIntStateOf(0)
+    var version by mutableIntStateOf(0)
+    val ts = TState()
+
+    // rascunhos e mensagens das telas (sobrevivem à troca de aba)
+    var chatInput by mutableStateOf("")
+    var learnText by mutableStateOf("")
+    var learnFrom by mutableStateOf("")
+    var learnMsg by mutableStateOf("")
+    var osmoseMsg by mutableStateOf("")
+    var backupMsg by mutableStateOf("")
+
+    private val chatLock = Any()
+
+    @Synchronized
+    fun init(ctx: Context) {
+        if (ready) return
+        appCtx = ctx.applicationContext
+        val d = Db(appCtx)
+        val tr = Tree(d, HashEmbedder())
+        val l = MiniLab(d)
+        tr.lab = l
+        db = d
+        tree = tr
+        lab = l
+        osmose = Osmose(appCtx, d, tr, l)
+        osmose.start()
+        ts.status = "Passos treinados: " + l.gpt.step
+        ready = true
+        scope.launch(Dispatchers.IO) {
+            val h = db.chatHistory()
+            val n = lab.corpusChars()
+            withContext(Dispatchers.Main) { msgs.addAll(0, h.map { Msg(it.first, it.second) }) }
+            ts.corpusInfo = "Corpus de treino em massa: " + n + " caracteres"
+        }
+    }
+
+    fun wantsService(): Boolean = ready && (osmose.enabled || pending > 0 || ts.training)
+
+    fun ensureService(ctx: Context) {
+        if (!wantsService()) return
+        try {
+            ContextCompat.startForegroundService(ctx, Intent(ctx, TrainService::class.java))
+        } catch (e: Throwable) {
+        }
+    }
+
+    // ------------------------------------------------------------------ conversa
+
+    fun send(text: String) {
+        val tx = text.trim()
+        if (tx.isEmpty()) return
+        msgs.add(Msg(true, tx))
+        pending++
+        osmose.hold(true)
+        ensureService(appCtx)
+        scope.launch(Dispatchers.IO) {
+            var a = ""
+            try {
+                synchronized(chatLock) {
+                    db.addChat(true, tx)
+                    a = osmose.chatTurn(tx)
+                    db.addChat(false, a)
+                }
+            } catch (e: Throwable) {
+                a = "Deu erro ao responder. Tente de novo."
+            }
+            withContext(Dispatchers.Main) {
+                msgs.add(Msg(false, a))
+                pending--
+                version++
+            }
+            osmose.hold(false)
+        }
+    }
+
+    fun clearChat() {
+        msgs.clear()
+        liked = emptySet()
+        scope.launch(Dispatchers.IO) { db.clearChat() }
+    }
+
+    fun like(idx: Int) {
+        if (idx in liked) return
+        liked = liked + idx
+        val snap = msgs.map { it.fromUser to it.text }
+        scope.launch(Dispatchers.IO) { osmose.like(snap, idx) }
+    }
+
+    // ------------------------------------------------------------------ treino manual
+
+    fun startTrain(total: Int) {
+        if (ts.busy) return
+        ts.busy = true
+        ts.training = true
+        ts.stop.set(false)
+        osmose.pauseNow()
+        osmose.manual.set(true)
+        osmose.hold(true)
+        ensureService(appCtx)
+        scope.launch(Dispatchers.Default) {
+            val msg = try {
+                if (lab.corpusSize() < 80) {
+                    "Ensine mais texto (ou importe um arquivo) antes de treinar."
+                } else {
+                    val t0 = System.currentTimeMillis()
+                    lab.train(total, 4, -1L, ts.stop) { i, loss ->
+                        val sec = (System.currentTimeMillis() - t0) / 1000
+                        ts.status = "passo " + lab.gpt.step + " | perda " + "%.3f".format(loss) +
+                            " | " + i + "/" + total + " | " + sec + "s"
+                    }
+                    "Treino concluído: " + lab.gpt.step + " passos no total, perda " + "%.3f".format(lab.gpt.lastLoss) + "."
+                }
+            } catch (e: Throwable) {
+                "Erro no treino: " + (e.message ?: "")
+            }
+            ts.status = msg
+            osmose.manual.set(false)
+            osmose.hold(false)
+            ts.training = false
+            ts.busy = false
+        }
+    }
+
+    // ------------------------------------------------------------------ backup do banco (pesos, corpus, árvore, conversa)
+
+    private fun dbFile(): File = appCtx.getDatabasePath("arvore.db")
+
+    fun backupTo(uri: android.net.Uri): String {
+        return try {
+            lab.saveNow()
+            synchronized(lab.lock) {
+                synchronized(db) {
+                    appCtx.contentResolver.openOutputStream(uri)?.use { out ->
+                        dbFile().inputStream().use { it.copyTo(out) }
+                    } ?: return "Não consegui abrir o destino."
+                }
+            }
+            "Backup salvo (" + (dbFile().length() / 1024) + " KB)."
+        } catch (e: Throwable) {
+            "Erro no backup: " + (e.message ?: "")
+        }
+    }
+
+    /** Devolve true se restaurou. Depois disso o app precisa fechar e abrir de novo. */
+    fun restoreFrom(uri: android.net.Uri): Pair<Boolean, String> {
+        val tmp = File(appCtx.cacheDir, "restore.db")
+        try {
+            appCtx.contentResolver.openInputStream(uri)?.use { inp ->
+                tmp.outputStream().use { inp.copyTo(it) }
+            } ?: return false to "Não consegui abrir o arquivo."
+            val head = ByteArray(15)
+            val n = tmp.inputStream().use { it.read(head) }
+            if (n < 15 || String(head, Charsets.ISO_8859_1) != "SQLite format 3") {
+                tmp.delete()
+                return false to "Esse arquivo não é um backup da Árvore Neural."
+            }
+            ts.stop.set(true)
+            osmose.pauseNow()
+            osmose.frozen = true
+            lab.frozen = true
+            Thread.sleep(1500)
+            synchronized(lab.lock) {
+                synchronized(db) {
+                    db.close()
+                    val f = dbFile()
+                    tmp.copyTo(f, overwrite = true)
+                    File(f.path + "-wal").delete()
+                    File(f.path + "-shm").delete()
+                    File(f.path + "-journal").delete()
+                }
+            }
+            tmp.delete()
+            return true to "Backup restaurado. O app vai fechar; abra de novo."
+        } catch (e: Throwable) {
+            return false to "Erro ao restaurar: " + (e.message ?: "")
+        }
+    }
+}

@@ -15,9 +15,29 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.7'
-      - name: Compilar APK debug
-        run: gradle assembleDebug --no-daemon --stacktrace
+      - name: Preparar chave de assinatura
+        env:
+          KS_BASE64: ${{ secrets.KS_BASE64 }}
+        run: |
+          if [ -n "$KS_BASE64" ]; then
+            echo "$KS_BASE64" | base64 -d > arvore.jks
+            echo "ASSINADO=sim" >> "$GITHUB_ENV"
+          else
+            echo "ASSINADO=nao" >> "$GITHUB_ENV"
+            echo "Sem KS_BASE64: o APK vai sair com chave de depuração."
+          fi
+      - name: Compilar APK
+        env:
+          KS_PASS: ${{ secrets.KS_PASS }}
+          KS_ALIAS: ${{ secrets.KS_ALIAS }}
+          KS_KEYPASS: ${{ secrets.KS_KEYPASS }}
+        run: |
+          if [ "$ASSINADO" = "sim" ]; then
+            gradle assembleRelease --no-daemon --stacktrace
+          else
+            gradle assembleDebug --no-daemon --stacktrace
+          fi
       - uses: actions/upload-artifact@v4
         with:
           name: arvore-neural-apk
-          path: app/build/outputs/apk/debug/app-debug.apk
+          path: app/build/outputs/apk/**/*.apk

@@ -4,8 +4,10 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.os.BatteryManager
+import android.os.PowerManager
 import com.arvoreneural.app.data.Db
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 
 private const val TU = "@u "
 private const val TA = "@a "
@@ -31,6 +33,41 @@ class Osmose(
     val manual = AtomicBoolean(false)
 
     @Volatile private var foreground = false
+    @Volatile private var loopWants = false
+    private val extUsers = AtomicInteger(0)
+    private val wl: PowerManager.WakeLock? = try {
+        (ctx.getSystemService(Context.POWER_SERVICE) as PowerManager)
+            .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "arvore:osmose")
+            .also { it.setReferenceCounted(false) }
+    } catch (e: Throwable) {
+        null
+    }
+
+    /** Impede o CPU de dormir com a tela apagada (treino, resposta ou geração em andamento). */
+    private fun cpu(on: Boolean) {
+        try {
+            val w = wl ?: return
+            if (on) {
+                if (!w.isHeld) w.acquire(10 * 60 * 1000L)
+            } else if (w.isHeld) {
+                w.release()
+            }
+        } catch (e: Throwable) {
+        }
+    }
+
+    private fun syncCpu() {
+        cpu(loopWants || extUsers.get() > 0)
+    }
+
+    /** Usado por quem trabalha fora do laço (resposta da conversa, treino manual). Chame hold(true) e depois hold(false). */
+    fun hold(on: Boolean) {
+        if (on) extUsers.incrementAndGet() else if (extUsers.get() > 0) extUsers.decrementAndGet()
+        syncCpu()
+    }
+
+    /** Usado ao restaurar um backup: a osmose para de treinar e de gravar. */
+    @Volatile var frozen = false
     @Volatile private var why = ""
     @Volatile private var working = false
     @Volatile private var dirtySteps = 0
@@ -73,7 +110,7 @@ class Osmose(
     fun setForeground(v: Boolean) {
         foreground = v
         if (!v) {
-            stopFlag.set(true)
+            // o treino continua em segundo plano (serviço); só garante que os pesos estejam gravados
             Thread {
                 try {
                     lab.saveNow()
@@ -93,11 +130,13 @@ class Osmose(
         while (true) {
             var pause = 3000L
             try {
-                if (!enabled) {
+                loopWants = false
+                if (frozen) {
+                    why = "restaurando backup"
+                } else if (!enabled) {
                     why = "desligada"
-                } else if (!foreground) {
-                    why = "app em segundo plano"
                 } else if (manual.get()) {
+                    loopWants = true
                     why = "treino manual em andamento"
                 } else if (!canTrain()) {
                     // canTrain já preencheu o motivo
@@ -105,13 +144,15 @@ class Osmose(
                     why = "nada para aprender ainda (converse, ensine ou importe uma conversa)"
                 } else {
                     why = ""
+                    loopWants = true
+                    syncCpu()
                     stopFlag.set(false)
                     working = true
                     val t0 = System.currentTimeMillis()
                     val n = lab.train(10, 4, -1L, stopFlag, false) { _, _ -> }
                     working = false
                     dirtySteps += n
-                    if (dirtySteps >= 200) {
+                    if (dirtySteps >= 100) {
                         lab.saveNow()
                         dirtySteps = 0
                     }
@@ -122,6 +163,7 @@ class Osmose(
                 working = false
                 pause = 5000L
             }
+            syncCpu()
             try {
                 Thread.sleep(pause)
             } catch (e: InterruptedException) {
