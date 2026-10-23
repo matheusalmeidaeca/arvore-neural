@@ -36,6 +36,17 @@ object Importer {
         return noise.any { low.contains(it) }
     }
 
+    /** Para o treino em massa: cada bloco vira uma linha só (conversa ou parágrafo), sem quebras. */
+    fun massBlocks(raw: String, onlyFrom: String): List<String> {
+        if (isWhatsApp(raw)) return whatsappBlocks(raw, onlyFrom)
+        val out = ArrayList<String>()
+        for (p in raw.split(Regex("\\n\\s*\\n"))) {
+            val s = p.trim().replace(Regex("\\s+"), " ")
+            if (s.length >= 20) out.add(s)
+        }
+        return out
+    }
+
     /** onlyFrom: parte do nome de quem falou (vazio = todos). Junta mensagens seguidas da mesma pessoa. */
     fun whatsappBlocks(raw: String, onlyFrom: String): List<String> {
         val msgs = mutableListOf<Pair<String, StringBuilder>>()

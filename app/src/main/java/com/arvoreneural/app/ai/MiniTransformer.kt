@@ -632,15 +632,52 @@ class MiniLab(private val db: Db) {
     }
 
     fun corpusSize(): Int {
-        var total = 0
+        var total = db.corpusChars()
         for (d in docs()) total += d.ids.size
         return total
     }
 
-    private fun sample(docs: List<Doc>, focus: Doc?, batch: Int, rnd: Random): List<Seq> {
+    @Volatile private var corpCache: IntArray? = null
+
+    /** Texto do treino em massa: um documento por linha; "\n" (id 0) separa os documentos. */
+    private fun corpusTokens(): IntArray {
+        val c = corpCache
+        if (c != null) return c
+        val enc = Vocab.encode(db.corpusText())
+        val out = if (enc.isNotEmpty() && enc[0] != 0) {
+            val a = IntArray(enc.size + 1)
+            System.arraycopy(enc, 0, a, 1, enc.size)
+            a
+        } else enc
+        corpCache = out
+        return out
+    }
+
+    fun corpusChars(): Int = db.corpusChars()
+
+    fun addCorpus(blocks: List<String>): Int {
+        val sb = StringBuilder()
+        for (b in blocks) sb.append(b).append('\n')
+        val n = db.addCorpus(sb.toString(), 8_000_000)
+        corpCache = null
+        return n
+    }
+
+    fun clearCorpus() {
+        db.clearCorpus()
+        corpCache = null
+    }
+
+    private fun sample(docs: List<Doc>, corp: IntArray, focus: Doc?, batch: Int, rnd: Random): List<Seq> {
         val t = gpt.cfg.t
+        val hasCorp = corp.size > t + 2
         val out = ArrayList<Seq>()
         for (b in 0 until batch) {
+            if ((focus == null || b % 2 == 1) && hasCorp && (docs.isEmpty() || rnd.nextBoolean())) {
+                val start = rnd.nextInt(corp.size - t - 1)
+                out.add(Seq(IntArray(0), corp.copyOfRange(start, start + t), corp.copyOfRange(start + 1, start + t + 1)))
+                continue
+            }
             val d = if (focus != null && b % 2 == 0) focus else docs[rnd.nextInt(docs.size)]
             val len = d.ids.size
             val nn = min(t, len - 1)
@@ -650,15 +687,16 @@ class MiniLab(private val db: Db) {
         return out
     }
 
-    /** Treina `steps` passos. O modelo só fica travado durante cada passo, então a conversa pode responder no meio. */
+    /** Treina `steps` passos (nós da árvore + corpus). O modelo só fica travado durante cada passo. */
     fun train(steps: Int, batch: Int, focusId: Long, stop: AtomicBoolean?, onStep: (Int, Float) -> Unit): Int {
         val ds = docs()
-        if (ds.isEmpty()) return 0
+        val corp = corpusTokens()
+        if (ds.isEmpty() && corp.size <= gpt.cfg.t + 2) return 0
         val focus = ds.firstOrNull { it.id == focusId }
         val rnd = Random(System.nanoTime())
         var i = 0
         while (i < steps && (stop == null || !stop.get())) {
-            val seqs = sample(ds, focus, batch, rnd)
+            val seqs = sample(ds, corp, focus, batch, rnd)
             val loss = synchronized(lock) { gpt.trainBatch(seqs, 1e-3f) }
             i++
             onStep(i, loss)

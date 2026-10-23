@@ -21,6 +21,7 @@ App Android nativo que (1) organiza conhecimento numa árvore, (2) usa modelo de
 - [x] 5.1 Conversa: aba "Conversa" para trocar mensagens com a árvore (`Tree.chat`). Pergunta (com `?`) busca na árvore; frase afirmativa é aprendida. Respostas são recuperação de trechos, não texto gerado.
 - [x] 6. Transformer próprio: port do mini.py (GPT de caracteres, T=64, C=128, H=4, L=4, AdamW) em Kotlin puro, com backpropagation escrito à mão (`ai/MiniTransformer.kt`). Treina no celular com o texto da árvore; pesos salvos no banco (versão 3). Aba "Transformer": treinar, gerar texto, autoteste do gradiente.
 - [x] 6.1 Árvore dentro do transformer: cada nó tem um vetor de galho no modelo (somado aos dos ancestrais); treino e respostas usam o galho do nó; frases novas na Conversa treinam o modelo em segundo plano; resposta da Conversa = 🧠 geração do transformer + 🌳 texto do nó
+- [x] 6.3 Treino em massa: importa um arquivo inteiro (até 8 milhões de caracteres) direto para o corpus do transformer, sem criar um nó por trecho; a árvore recebe só ~40 nós representativos. Os passos de treino misturam corpus e nós. Banco versão 4.
 - [ ] 6.2 Usar os vetores internos do transformer para escolher/encaixar nós (no lugar do HashEmbedder) e cache de atenção (KV) para gerar mais rápido
 - [x] 5.2 Importador de WhatsApp (tira data/hora/nome, junta mensagens seguidas, filtro por nome), respostas limpas (`tidy`), histórico da conversa salvo (banco versão 2) e botão "Apagar toda a árvore"
 - [ ] 7. Polimento: ícone, gráfico da série, exportar/importar backup do banco, busca por ramo, APK assinado (release)
@@ -31,7 +32,7 @@ App Android nativo que (1) organiza conhecimento numa árvore, (2) usa modelo de
 - `.../ai/Embedder.kt` — interface + HashEmbedder
 - `.../ai/Tree.kt` — lógica da árvore e conversa (`chat`)
 - `.../ai/MiniTransformer.kt` — transformer próprio (modelo, treino, geração, salvar/carregar)
-- `.../ai/Importer.kt` — leitura de conversas exportadas do WhatsApp
+- `.../ai/Importer.kt` (inclui `massBlocks` para o treino em massa) — leitura de conversas exportadas do WhatsApp
 - `.../ai/Forecaster.kt` — previsão
 - `.github/workflows/build.yml` — build do APK
 

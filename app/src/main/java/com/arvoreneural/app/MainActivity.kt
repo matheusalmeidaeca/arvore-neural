@@ -103,7 +103,7 @@ fun App(db: Db, tree: Tree, lab: MiniLab) {
                 1 -> TreeScreen(db, tree, version) { version++ }
                 2 -> LearnScreen(tree, db) { version++ }
                 3 -> ForecastScreen(db)
-                else -> TransformerScreen(lab)
+                else -> TransformerScreen(lab, tree)
             }
         }
     }
@@ -338,7 +338,7 @@ fun ForecastScreen(db: Db) {
 }
 
 @Composable
-fun TransformerScreen(lab: MiniLab) {
+fun TransformerScreen(lab: MiniLab, tree: Tree) {
     var status by remember { mutableStateOf("Passos treinados: " + lab.gpt.step) }
     var training by remember { mutableStateOf(false) }
     var busy by remember { mutableStateOf(false) }
@@ -352,6 +352,53 @@ fun TransformerScreen(lab: MiniLab) {
         view.keepScreenOn = training
         onDispose { view.keepScreenOn = false }
     }
+    val ctx = LocalContext.current
+    var onlyFrom by remember { mutableStateOf("") }
+    var corpusInfo by remember { mutableStateOf("") }
+    var confirmCorpus by remember { mutableStateOf(false) }
+    LaunchedEffect(Unit) {
+        val n = withContext(Dispatchers.IO) { lab.corpusChars() }
+        corpusInfo = "Corpus de treino em massa: " + n + " caracteres"
+    }
+    val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? ->
+        if (uri != null) {
+            scope.launch {
+                busy = true
+                status = "Lendo e preparando o arquivo…"
+                val msg = withContext(Dispatchers.IO) {
+                    val raw = ctx.contentResolver.openInputStream(uri)?.bufferedReader()?.readText() ?: ""
+                    tree.importMass(raw, onlyFrom)
+                }
+                val n = withContext(Dispatchers.IO) { lab.corpusChars() }
+                corpusInfo = "Corpus de treino em massa: " + n + " caracteres"
+                status = msg
+                busy = false
+            }
+        }
+    }
+    val startTrain = { total: Int ->
+        scope.launch {
+            busy = true
+            training = true
+            stop.set(false)
+            val msg = withContext(Dispatchers.Default) {
+                if (lab.corpusSize() < 80) {
+                    return@withContext "Ensine mais texto (ou importe um arquivo) antes de treinar."
+                }
+                val t0 = System.currentTimeMillis()
+                lab.train(total, 8, -1L, stop) { i, loss ->
+                    val sec = (System.currentTimeMillis() - t0) / 1000
+                    val ls = "%.3f".format(loss)
+                    status = "passo " + lab.gpt.step + " | perda " + ls + " | " + i + "/" + total + " | " + sec + "s"
+                }
+                val fin = "%.3f".format(lab.gpt.lastLoss)
+                "Treino concluído: " + lab.gpt.step + " passos no total, perda " + fin + "."
+            }
+            status = msg
+            training = false
+            busy = false
+        }
+    }
 
     Column(
         modifier = Modifier.verticalScroll(rememberScrollState()),
@@ -362,32 +409,32 @@ fun TransformerScreen(lab: MiniLab) {
             style = MaterialTheme.typography.bodyMedium
         )
         Text(status, style = MaterialTheme.typography.titleSmall)
+        Text(corpusInfo, style = MaterialTheme.typography.bodySmall)
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Button(enabled = !busy, onClick = {
-                scope.launch {
-                    busy = true
-                    training = true
-                    stop.set(false)
-                    val msg = withContext(Dispatchers.Default) {
-                        if (lab.corpusSize() < 80) {
-                            return@withContext "Ensine mais texto à árvore (mínimo ~80 caracteres) antes de treinar."
-                        }
-                        val t0 = System.currentTimeMillis()
-                        lab.train(300, 8, -1L, stop) { i, loss ->
-                            val sec = (System.currentTimeMillis() - t0) / 1000
-                            val ls = "%.3f".format(loss)
-                            status = "passo " + lab.gpt.step + " | perda " + ls + " | " + i + "/300 | " + sec + "s"
-                        }
-                        val fin = "%.3f".format(lab.gpt.lastLoss)
-                        "Treino concluído: " + lab.gpt.step + " passos no total, perda " + fin + "."
-                    }
-                    status = msg
-                    training = false
-                    busy = false
-                }
-            }) { Text("Treinar 300 passos") }
+            Button(enabled = !busy, onClick = { startTrain(300) }) { Text("Treinar 300") }
+            Button(enabled = !busy, onClick = { startTrain(2000) }) { Text("Treinar 2000") }
             Button(enabled = training, onClick = { stop.set(true) }) { Text("Parar") }
         }
+        OutlinedTextField(
+            value = onlyFrom,
+            onValueChange = { onlyFrom = it },
+            label = { Text("WhatsApp: só mensagens de (opcional)") },
+            modifier = Modifier.fillMaxWidth()
+        )
+        Button(enabled = !busy, onClick = { picker.launch(arrayOf("text/*")) }) {
+            Text("Importar texto para treino em massa")
+        }
+        TextButton(enabled = !busy, onClick = {
+            if (!confirmCorpus) {
+                confirmCorpus = true
+            } else {
+                confirmCorpus = false
+                scope.launch {
+                    withContext(Dispatchers.IO) { lab.clearCorpus() }
+                    corpusInfo = "Corpus de treino em massa: 0 caracteres"
+                }
+            }
+        }) { Text(if (confirmCorpus) "Toque de novo para confirmar" else "Apagar corpus de treino") }
         OutlinedTextField(
             value = prompt,
             onValueChange = { prompt = it },

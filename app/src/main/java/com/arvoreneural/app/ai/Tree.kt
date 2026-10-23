@@ -50,6 +50,37 @@ class Tree(private val db: Db, private val emb: Embedder) {
         return count
     }
 
+    /**
+     * Treino em massa: o arquivo inteiro vai para o corpus do transformer e a árvore recebe só
+     * alguns nós representativos (assuntos bem diferentes entre si).
+     */
+    fun importMass(raw: String, onlyFrom: String = "", maxNodes: Int = 40): String {
+        val blocks = Importer.massBlocks(raw, onlyFrom)
+        if (blocks.isEmpty()) return "Não encontrei texto aproveitável nesse arquivo."
+        val l = lab
+        val chars = if (l != null) l.addCorpus(blocks) else 0
+        val reps = ArrayList<FloatArray>()
+        var nodes = 0
+        for (i in blocks.indices.shuffled(java.util.Random(7))) {
+            if (nodes >= maxNodes) break
+            val b = blocks[i]
+            val e = emb.embed(b)
+            var dup = false
+            for (r in reps) {
+                if (cosine(e, r) >= 0.5f) {
+                    dup = true
+                    break
+                }
+            }
+            if (dup) continue
+            reps.add(e)
+            learn(b)
+            nodes++
+        }
+        return "Importado: " + blocks.size + " trechos. Corpus +" + chars + " caracteres; árvore +" + nodes +
+            " nós representativos. Agora toque em Treinar."
+    }
+
     fun ask(q: String, k: Int = 3): List<Pair<Node, Float>> {
         val e = emb.embed(q)
         return db.allNodes()

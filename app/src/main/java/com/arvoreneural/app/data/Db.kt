@@ -17,11 +17,12 @@ class Node(
 
 class Point(val id: Long, val series: String, val value: Double, val ts: Long)
 
-class Db(ctx: Context) : SQLiteOpenHelper(ctx, "arvore.db", null, 3) {
+class Db(ctx: Context) : SQLiteOpenHelper(ctx, "arvore.db", null, 4) {
 
     override fun onCreate(d: SQLiteDatabase) {
         createChat(d)
         createModel(d)
+        createCorpus(d)
         d.execSQL(
             "CREATE TABLE nodes(id INTEGER PRIMARY KEY AUTOINCREMENT, parent_id INTEGER NOT NULL, " +
                 "title TEXT NOT NULL, content TEXT NOT NULL, embedding BLOB NOT NULL, created_at INTEGER NOT NULL)"
@@ -30,6 +31,10 @@ class Db(ctx: Context) : SQLiteOpenHelper(ctx, "arvore.db", null, 3) {
             "CREATE TABLE points(id INTEGER PRIMARY KEY AUTOINCREMENT, series TEXT NOT NULL, " +
                 "value REAL NOT NULL, ts INTEGER NOT NULL)"
         )
+    }
+
+    private fun createCorpus(d: SQLiteDatabase) {
+        d.execSQL("CREATE TABLE IF NOT EXISTS corpus(idx INTEGER PRIMARY KEY, text TEXT NOT NULL)")
     }
 
     private fun createModel(d: SQLiteDatabase) {
@@ -46,6 +51,7 @@ class Db(ctx: Context) : SQLiteOpenHelper(ctx, "arvore.db", null, 3) {
     override fun onUpgrade(d: SQLiteDatabase, oldV: Int, newV: Int) {
         if (oldV < 2) createChat(d)
         if (oldV < 3) createModel(d)
+        if (oldV < 4) createCorpus(d)
     }
 
     private fun toBlob(a: FloatArray): ByteArray {
@@ -212,6 +218,56 @@ class Db(ctx: Context) : SQLiteOpenHelper(ctx, "arvore.db", null, 3) {
     @Synchronized
     fun clearModel() {
         writableDatabase.delete("model", null, null)
+    }
+
+    @Synchronized
+    fun corpusChars(): Int {
+        val c = readableDatabase.rawQuery("SELECT COALESCE(SUM(LENGTH(text)),0) FROM corpus", null)
+        return c.use { if (it.moveToFirst()) it.getInt(0) else 0 }
+    }
+
+    /** Acrescenta texto ao corpus de treino (pedaços de até 40 mil caracteres). Devolve quantos caracteres entraram. */
+    @Synchronized
+    fun addCorpus(text: String, limit: Int): Int {
+        val room = limit - corpusChars()
+        if (room <= 0) return 0
+        val t = if (text.length > room) text.substring(0, room) else text
+        val d = writableDatabase
+        d.beginTransaction()
+        try {
+            val c = d.rawQuery("SELECT COALESCE(MAX(idx),-1) FROM corpus", null)
+            var idx = c.use { if (it.moveToFirst()) it.getInt(0) + 1 else 0 }
+            var off = 0
+            while (off < t.length) {
+                var end = minOf(off + 40_000, t.length)
+                if (end < t.length && Character.isHighSurrogate(t[end - 1])) end--
+                val cv = ContentValues()
+                cv.put("idx", idx)
+                cv.put("text", t.substring(off, end))
+                d.insert("corpus", null, cv)
+                idx++
+                off = end
+            }
+            d.setTransactionSuccessful()
+        } finally {
+            d.endTransaction()
+        }
+        return t.length
+    }
+
+    @Synchronized
+    fun corpusText(): String {
+        val sb = StringBuilder()
+        val c = readableDatabase.rawQuery("SELECT text FROM corpus ORDER BY idx", null)
+        c.use {
+            while (it.moveToNext()) sb.append(it.getString(0))
+        }
+        return sb.toString()
+    }
+
+    @Synchronized
+    fun clearCorpus() {
+        writableDatabase.delete("corpus", null, null)
     }
 
     @Synchronized
