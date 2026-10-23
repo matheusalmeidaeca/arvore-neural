@@ -20,15 +20,22 @@ App Android nativo que (1) organiza conhecimento numa árvore, (2) usa modelo de
 - [x] 5. Prever/analisar números: tendência dos últimos 12 valores, reajustada a cada novo dado (`ai/Forecaster.kt`)
 - [x] 5.1 Conversa: aba "Conversa" para trocar mensagens com a árvore (`Tree.chat`). Pergunta (com `?`) busca na árvore; frase afirmativa é aprendida. Respostas são recuperação de trechos, não texto gerado.
 - [ ] 6. Transformer real: ONNX Runtime Mobile + modelo de embeddings multilíngue (ex.: MiniLM) em `app/src/main/assets`, criando `OnnxEmbedder : Embedder` com tokenizador WordPiece
-- [ ] 7. Polimento: histórico da conversa salvo no banco, ícone, gráfico da série, exportar/importar backup do banco, busca por ramo, APK assinado (release)
+- [x] 5.2 Importador de WhatsApp (tira data/hora/nome, junta mensagens seguidas, filtro por nome), respostas limpas (`tidy`), histórico da conversa salvo (banco versão 2) e botão "Apagar toda a árvore"
+- [ ] 7. Polimento: ícone, gráfico da série, exportar/importar backup do banco, busca por ramo, APK assinado (release)
 
 ## Arquivos
 - `app/src/main/java/com/arvoreneural/app/MainActivity.kt` — telas: Conversa, Árvore, Aprender, Prever
 - `.../data/Db.kt` — tabelas `nodes` e `points`
 - `.../ai/Embedder.kt` — interface + HashEmbedder
 - `.../ai/Tree.kt` — lógica da árvore e conversa (`chat`)
+- `.../ai/Importer.kt` — leitura de conversas exportadas do WhatsApp
 - `.../ai/Forecaster.kt` — previsão
 - `.github/workflows/build.yml` — build do APK
+
+## O que isto é (e não é)
+- É uma memória em árvore com busca por similaridade. Ainda NÃO é um transformer: o vetorizador atual (HashEmbedder) é só contagem de palavras.
+- Vira "transformer" na Etapa 6, quando o HashEmbedder for trocado por um encoder transformer (MiniLM via ONNX). A árvore em si continua sendo a estrutura de memória.
+- Uma IA que escreve respostas novas exigiria um modelo generativo (LLM) bem maior.
 
 ## Limites conhecidos
 - Este código foi escrito sem compilar no ambiente do Claude: o primeiro build pode apontar erros. Se falhar, copie o log do passo "Compilar APK debug" e envie ao Claude.

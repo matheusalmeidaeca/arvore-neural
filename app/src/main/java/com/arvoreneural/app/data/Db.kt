@@ -17,9 +17,10 @@ class Node(
 
 class Point(val id: Long, val series: String, val value: Double, val ts: Long)
 
-class Db(ctx: Context) : SQLiteOpenHelper(ctx, "arvore.db", null, 1) {
+class Db(ctx: Context) : SQLiteOpenHelper(ctx, "arvore.db", null, 2) {
 
     override fun onCreate(d: SQLiteDatabase) {
+        createChat(d)
         d.execSQL(
             "CREATE TABLE nodes(id INTEGER PRIMARY KEY AUTOINCREMENT, parent_id INTEGER NOT NULL, " +
                 "title TEXT NOT NULL, content TEXT NOT NULL, embedding BLOB NOT NULL, created_at INTEGER NOT NULL)"
@@ -30,7 +31,16 @@ class Db(ctx: Context) : SQLiteOpenHelper(ctx, "arvore.db", null, 1) {
         )
     }
 
-    override fun onUpgrade(d: SQLiteDatabase, oldV: Int, newV: Int) {}
+    private fun createChat(d: SQLiteDatabase) {
+        d.execSQL(
+            "CREATE TABLE IF NOT EXISTS chat(id INTEGER PRIMARY KEY AUTOINCREMENT, " +
+                "from_user INTEGER NOT NULL, text TEXT NOT NULL, ts INTEGER NOT NULL)"
+        )
+    }
+
+    override fun onUpgrade(d: SQLiteDatabase, oldV: Int, newV: Int) {
+        if (oldV < 2) createChat(d)
+    }
 
     private fun toBlob(a: FloatArray): ByteArray {
         val bb = ByteBuffer.allocate(a.size * 4)
@@ -104,6 +114,38 @@ class Db(ctx: Context) : SQLiteOpenHelper(ctx, "arvore.db", null, 1) {
         cv.put("value", value)
         cv.put("ts", System.currentTimeMillis())
         writableDatabase.insert("points", null, cv)
+    }
+
+    @Synchronized
+    fun clearNodes() {
+        writableDatabase.delete("nodes", null, null)
+    }
+
+    @Synchronized
+    fun addChat(fromUser: Boolean, text: String) {
+        val cv = ContentValues()
+        cv.put("from_user", if (fromUser) 1 else 0)
+        cv.put("text", text)
+        cv.put("ts", System.currentTimeMillis())
+        writableDatabase.insert("chat", null, cv)
+    }
+
+    @Synchronized
+    fun chatHistory(limit: Int = 200): List<Pair<Boolean, String>> {
+        val out = ArrayList<Pair<Boolean, String>>()
+        val c = readableDatabase.rawQuery(
+            "SELECT from_user,text FROM chat ORDER BY id DESC LIMIT ?", arrayOf(limit.toString())
+        )
+        c.use {
+            while (it.moveToNext()) out.add((it.getInt(0) == 1) to it.getString(1))
+        }
+        out.reverse()
+        return out
+    }
+
+    @Synchronized
+    fun clearChat() {
+        writableDatabase.delete("chat", null, null)
     }
 
     @Synchronized

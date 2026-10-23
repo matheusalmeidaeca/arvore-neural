@@ -68,6 +68,10 @@ fun App(db: Db, tree: Tree) {
     var tab by remember { mutableIntStateOf(0) }
     var version by remember { mutableIntStateOf(0) }
     val msgs = remember { mutableStateListOf<Msg>() }
+    LaunchedEffect(Unit) {
+        val h = withContext(Dispatchers.IO) { db.chatHistory() }
+        msgs.addAll(0, h.map { Msg(it.first, it.second) })
+    }
     val labels = listOf("Conversa", "Árvore", "Aprender", "Prever")
     val icons = listOf("💬", "🌳", "✍️", "📈")
     Scaffold(
@@ -86,9 +90,9 @@ fun App(db: Db, tree: Tree) {
     ) { pad ->
         Box(Modifier.padding(pad).padding(16.dp).fillMaxSize()) {
             when (tab) {
-                0 -> ChatScreen(tree, msgs) { version++ }
+                0 -> ChatScreen(db, tree, msgs) { version++ }
                 1 -> TreeScreen(db, tree, version) { version++ }
-                2 -> LearnScreen(tree) { version++ }
+                2 -> LearnScreen(tree, db) { version++ }
                 else -> ForecastScreen(db)
             }
         }
@@ -98,7 +102,7 @@ fun App(db: Db, tree: Tree) {
 class Msg(val fromUser: Boolean, val text: String)
 
 @Composable
-fun ChatScreen(tree: Tree, msgs: MutableList<Msg>, onChange: () -> Unit) {
+fun ChatScreen(db: Db, tree: Tree, msgs: MutableList<Msg>, onChange: () -> Unit) {
     var input by remember { mutableStateOf("") }
     val scope = rememberCoroutineScope()
     val listState = rememberLazyListState()
@@ -106,6 +110,12 @@ fun ChatScreen(tree: Tree, msgs: MutableList<Msg>, onChange: () -> Unit) {
         if (msgs.isNotEmpty()) listState.animateScrollToItem(msgs.size - 1)
     }
     Column(Modifier.fillMaxSize()) {
+        if (msgs.isNotEmpty()) {
+            TextButton(onClick = {
+                msgs.clear()
+                scope.launch { withContext(Dispatchers.IO) { db.clearChat() } }
+            }) { Text("Limpar conversa") }
+        }
         LazyColumn(
             modifier = Modifier.weight(1f).fillMaxWidth(),
             state = listState,
@@ -144,7 +154,12 @@ fun ChatScreen(tree: Tree, msgs: MutableList<Msg>, onChange: () -> Unit) {
                     input = ""
                     msgs.add(Msg(true, t))
                     scope.launch {
-                        val r = withContext(Dispatchers.IO) { tree.chat(t) }
+                        val r = withContext(Dispatchers.IO) {
+                            db.addChat(true, t)
+                            val a = tree.chat(t)
+                            db.addChat(false, a)
+                            a
+                        }
                         msgs.add(Msg(false, r))
                         onChange()
                     }
@@ -208,17 +223,19 @@ fun TreeScreen(db: Db, tree: Tree, version: Int, onChange: () -> Unit) {
 }
 
 @Composable
-fun LearnScreen(tree: Tree, onChange: () -> Unit) {
+fun LearnScreen(tree: Tree, db: Db, onChange: () -> Unit) {
     val ctx = LocalContext.current
     var text by remember { mutableStateOf("") }
     var msg by remember { mutableStateOf("") }
+    var onlyFrom by remember { mutableStateOf("") }
+    var confirmClear by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? ->
         if (uri != null) {
             scope.launch {
                 val n = withContext(Dispatchers.IO) {
                     val raw = ctx.contentResolver.openInputStream(uri)?.bufferedReader()?.readText() ?: ""
-                    tree.learnFile(raw)
+                    tree.learnFile(raw, onlyFrom)
                 }
                 msg = "$n trechos aprendidos"
                 onChange()
@@ -241,8 +258,26 @@ fun LearnScreen(tree: Tree, onChange: () -> Unit) {
                 onChange()
             }
         }) { Text("Aprender") }
+        OutlinedTextField(
+            value = onlyFrom,
+            onValueChange = { onlyFrom = it },
+            label = { Text("WhatsApp: só mensagens de (nome, opcional)") },
+            modifier = Modifier.fillMaxWidth()
+        )
         Button(onClick = { picker.launch(arrayOf("text/*")) }) { Text("Importar arquivo .txt") }
         Text(msg)
+        TextButton(onClick = {
+            if (!confirmClear) {
+                confirmClear = true
+            } else {
+                confirmClear = false
+                scope.launch {
+                    withContext(Dispatchers.IO) { db.clearNodes() }
+                    msg = "Árvore apagada"
+                    onChange()
+                }
+            }
+        }) { Text(if (confirmClear) "Toque de novo para confirmar" else "Apagar toda a árvore") }
     }
 }
 

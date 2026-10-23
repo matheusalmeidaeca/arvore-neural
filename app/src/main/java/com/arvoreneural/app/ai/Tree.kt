@@ -8,8 +8,10 @@ class Tree(private val db: Db, private val emb: Embedder) {
 
     companion object {
         const val MIN_SIM = 0.30f
-        const val MAX_CHUNKS = 300
+        const val MAX_CHUNKS = 400
     }
+
+    private val stamp = Regex("\\d{1,2}/\\d{1,2}/\\d{2,4}[ ,]+\\d{1,2}:\\d{2}(:\\d{2})?\\s*-?\\s*")
 
     fun learn(text: String): Long {
         val clean = text.trim()
@@ -35,9 +37,11 @@ class Tree(private val db: Db, private val emb: Embedder) {
         return id
     }
 
-    fun learnFile(raw: String): Int {
+    /** onlyFrom só vale para conversas do WhatsApp: aprende apenas mensagens de quem tem esse nome. */
+    fun learnFile(raw: String, onlyFrom: String = ""): Int {
         var count = 0
-        for (c in chunk(raw).take(MAX_CHUNKS)) {
+        val parts = if (Importer.isWhatsApp(raw)) Importer.whatsappBlocks(raw, onlyFrom) else chunk(raw)
+        for (c in parts.take(MAX_CHUNKS)) {
             if (learn(c) > 0) count++
         }
         return count
@@ -60,19 +64,30 @@ class Tree(private val db: Db, private val emb: Embedder) {
         if (text.contains("?")) {
             if (found.isEmpty()) return "Ainda não sei nada sobre isso. Me ensine com uma frase (sem interrogação)."
             val (best, s) = found[0]
-            val sb = StringBuilder()
-            sb.append(best.content.take(400)).append("\n(confiança ").append((s * 100).toInt()).append("%)")
-            if (found.size > 1) {
-                sb.append("\nTambém relacionado: ")
-                sb.append(found.drop(1).joinToString(" | ") { it.first.title })
+            val sb = StringBuilder(tidy(best.content, 300))
+            sb.append("\n(confiança ").append((s * 100).toInt()).append("%)")
+            val rel = found.drop(1).filter { it.second >= 0.25f }
+            if (rel.isNotEmpty()) {
+                sb.append("\nVeja também: ")
+                sb.append(rel.joinToString(" | ") { tidy(it.first.content, 80) })
             }
             return sb.toString()
         }
         learn(text)
         if (found.isEmpty()) return "Aprendi! Assunto novo: abri um galho novo na árvore."
         val (best, s) = found[0]
-        return if (s >= MIN_SIM) "Aprendi! Encaixei sob: " + best.title
-        else "Aprendi! Abri um galho novo (o mais parecido era: " + best.title + ")."
+        return if (s >= MIN_SIM) "Aprendi! Encaixei sob: " + tidy(best.title, 60)
+        else "Aprendi! Abri um galho novo (o mais parecido era: " + tidy(best.title, 60) + ")."
+    }
+
+    /** Remove carimbos de data/hora e corta em fim de frase ou de palavra. */
+    private fun tidy(s: String, max: Int): String {
+        val t = s.replace(stamp, "").replace(Regex("\\s+"), " ").trim()
+        if (t.length <= max) return t
+        val cut = t.substring(0, max)
+        val end = maxOf(cut.lastIndexOf(". "), cut.lastIndexOf("! "), cut.lastIndexOf("? "))
+        if (end > max / 2) return cut.substring(0, end + 1)
+        return cut.substring(0, cut.lastIndexOf(' ').coerceAtLeast(1)) + "…"
     }
 
     private fun chunk(raw: String, max: Int = 500): List<String> {
