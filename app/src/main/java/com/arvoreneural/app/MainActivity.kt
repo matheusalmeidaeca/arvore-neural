@@ -35,6 +35,11 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.ui.platform.LocalView
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import java.util.concurrent.atomic.AtomicBoolean
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -47,6 +52,8 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import com.arvoreneural.app.ai.Forecaster
 import com.arvoreneural.app.ai.HashEmbedder
+import com.arvoreneural.app.ai.MiniLab
+import com.arvoreneural.app.ai.miniSelfTest
 import com.arvoreneural.app.ai.Tree
 import com.arvoreneural.app.data.Db
 import com.arvoreneural.app.data.Node
@@ -59,12 +66,13 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         val db = Db(applicationContext)
         val tree = Tree(db, HashEmbedder())
-        setContent { MaterialTheme { App(db, tree) } }
+        val lab = MiniLab(db)
+        setContent { MaterialTheme { App(db, tree, lab) } }
     }
 }
 
 @Composable
-fun App(db: Db, tree: Tree) {
+fun App(db: Db, tree: Tree, lab: MiniLab) {
     var tab by remember { mutableIntStateOf(0) }
     var version by remember { mutableIntStateOf(0) }
     val msgs = remember { mutableStateListOf<Msg>() }
@@ -72,8 +80,8 @@ fun App(db: Db, tree: Tree) {
         val h = withContext(Dispatchers.IO) { db.chatHistory() }
         msgs.addAll(0, h.map { Msg(it.first, it.second) })
     }
-    val labels = listOf("Conversa", "Árvore", "Aprender", "Prever")
-    val icons = listOf("💬", "🌳", "✍️", "📈")
+    val labels = listOf("Conversa", "Árvore", "Aprender", "Prever", "Transformer")
+    val icons = listOf("💬", "🌳", "✍️", "📈", "🧠")
     Scaffold(
         bottomBar = {
             NavigationBar {
@@ -93,7 +101,8 @@ fun App(db: Db, tree: Tree) {
                 0 -> ChatScreen(db, tree, msgs) { version++ }
                 1 -> TreeScreen(db, tree, version) { version++ }
                 2 -> LearnScreen(tree, db) { version++ }
-                else -> ForecastScreen(db)
+                3 -> ForecastScreen(db)
+                else -> TransformerScreen(lab)
             }
         }
     }
@@ -324,5 +333,106 @@ fun ForecastScreen(db: Db) {
             else "Preciso de ao menos 2 valores para prever.",
             style = MaterialTheme.typography.titleMedium
         )
+    }
+}
+
+@Composable
+fun TransformerScreen(lab: MiniLab) {
+    var status by remember { mutableStateOf("Passos treinados: " + lab.gpt.step) }
+    var training by remember { mutableStateOf(false) }
+    var busy by remember { mutableStateOf(false) }
+    var prompt by remember { mutableStateOf("") }
+    var output by remember { mutableStateOf("") }
+    var confirmReset by remember { mutableStateOf(false) }
+    val stop = remember { AtomicBoolean(false) }
+    val scope = rememberCoroutineScope()
+    val view = LocalView.current
+    DisposableEffect(training) {
+        view.keepScreenOn = training
+        onDispose { view.keepScreenOn = false }
+    }
+
+    Column(
+        modifier = Modifier.verticalScroll(rememberScrollState()),
+        verticalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+        Text(
+            "Seu mini-transformer em Kotlin: " + lab.gpt.lay.n + " parâmetros (4 camadas, 128 dims, 4 cabeças, contexto 64). Treina com o texto que a árvore aprendeu. Deixe o app aberto durante o treino.",
+            style = MaterialTheme.typography.bodyMedium
+        )
+        Text(status, style = MaterialTheme.typography.titleSmall)
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Button(enabled = !busy, onClick = {
+                scope.launch {
+                    busy = true
+                    training = true
+                    stop.set(false)
+                    val msg = withContext(Dispatchers.Default) {
+                        val data = lab.corpus()
+                        if (data.size < 80) {
+                            return@withContext "Ensine mais texto à árvore (mínimo ~80 caracteres) antes de treinar."
+                        }
+                        val rnd = java.util.Random(System.nanoTime())
+                        val t0 = System.currentTimeMillis()
+                        var i = 0
+                        while (i < 300 && !stop.get()) {
+                            val loss = lab.gpt.trainStep(data, 8, 1e-3f, rnd)
+                            i++
+                            val sec = (System.currentTimeMillis() - t0) / 1000
+                            val ls = "%.3f".format(loss)
+                            status = "passo " + lab.gpt.step + " | perda " + ls + " | " + i + "/300 | " + sec + "s"
+                            if (i % 100 == 0) lab.save()
+                        }
+                        lab.save()
+                        val fin = "%.3f".format(lab.gpt.lastLoss)
+                        "Treino concluído: " + lab.gpt.step + " passos no total, perda " + fin + "."
+                    }
+                    status = msg
+                    training = false
+                    busy = false
+                }
+            }) { Text("Treinar 300 passos") }
+            Button(enabled = training, onClick = { stop.set(true) }) { Text("Parar") }
+        }
+        OutlinedTextField(
+            value = prompt,
+            onValueChange = { prompt = it },
+            label = { Text("Começo do texto (opcional)") },
+            modifier = Modifier.fillMaxWidth()
+        )
+        Button(enabled = !busy, onClick = {
+            val p = prompt
+            scope.launch {
+                busy = true
+                output = "Gerando…"
+                output = withContext(Dispatchers.Default) {
+                    p + lab.gpt.generate(p, 200, 0.8f, java.util.Random())
+                }
+                busy = false
+            }
+        }) { Text("Gerar texto") }
+        Text(output)
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Button(enabled = !busy, onClick = {
+                scope.launch {
+                    busy = true
+                    output = "Testando…"
+                    output = withContext(Dispatchers.Default) { miniSelfTest() }
+                    busy = false
+                }
+            }) { Text("Autoteste") }
+            TextButton(enabled = !busy, onClick = {
+                if (!confirmReset) {
+                    confirmReset = true
+                } else {
+                    confirmReset = false
+                    scope.launch {
+                        withContext(Dispatchers.IO) { lab.reset() }
+                        status = "Transformer reiniciado do zero."
+                        output = ""
+                    }
+                }
+            }) { Text(if (confirmReset) "Toque de novo para confirmar" else "Reiniciar transformer") }
+        }
     }
 }

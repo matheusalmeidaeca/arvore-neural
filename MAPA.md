@@ -19,7 +19,8 @@ App Android nativo que (1) organiza conhecimento numa árvore, (2) usa modelo de
 - [x] 4. Aprendizado em tempo real: texto novo é encaixado sob o nó mais parecido (similaridade ≥ 0,30) e o nó pai é ajustado (`Tree.learn`)
 - [x] 5. Prever/analisar números: tendência dos últimos 12 valores, reajustada a cada novo dado (`ai/Forecaster.kt`)
 - [x] 5.1 Conversa: aba "Conversa" para trocar mensagens com a árvore (`Tree.chat`). Pergunta (com `?`) busca na árvore; frase afirmativa é aprendida. Respostas são recuperação de trechos, não texto gerado.
-- [ ] 6. Transformer real: ONNX Runtime Mobile + modelo de embeddings multilíngue (ex.: MiniLM) em `app/src/main/assets`, criando `OnnxEmbedder : Embedder` com tokenizador WordPiece
+- [x] 6. Transformer próprio: port do mini.py (GPT de caracteres, T=64, C=128, H=4, L=4, AdamW) em Kotlin puro, com backpropagation escrito à mão (`ai/MiniTransformer.kt`). Treina no celular com o texto da árvore; pesos salvos no banco (versão 3). Aba "Transformer": treinar, gerar texto, autoteste do gradiente.
+- [ ] 6.1 Ligar o transformer à Conversa (responder gerando texto) e usar seus vetores internos como embedding da árvore (no lugar do HashEmbedder)
 - [x] 5.2 Importador de WhatsApp (tira data/hora/nome, junta mensagens seguidas, filtro por nome), respostas limpas (`tidy`), histórico da conversa salvo (banco versão 2) e botão "Apagar toda a árvore"
 - [ ] 7. Polimento: ícone, gráfico da série, exportar/importar backup do banco, busca por ramo, APK assinado (release)
 
@@ -28,15 +29,18 @@ App Android nativo que (1) organiza conhecimento numa árvore, (2) usa modelo de
 - `.../data/Db.kt` — tabelas `nodes` e `points`
 - `.../ai/Embedder.kt` — interface + HashEmbedder
 - `.../ai/Tree.kt` — lógica da árvore e conversa (`chat`)
+- `.../ai/MiniTransformer.kt` — transformer próprio (modelo, treino, geração, salvar/carregar)
 - `.../ai/Importer.kt` — leitura de conversas exportadas do WhatsApp
 - `.../ai/Forecaster.kt` — previsão
 - `.github/workflows/build.yml` — build do APK
 
 ## O que isto é (e não é)
-- É uma memória em árvore com busca por similaridade. Ainda NÃO é um transformer: o vetorizador atual (HashEmbedder) é só contagem de palavras.
-- Vira "transformer" na Etapa 6, quando o HashEmbedder for trocado por um encoder transformer (MiniLM via ONNX). A árvore em si continua sendo a estrutura de memória.
-- Uma IA que escreve respostas novas exigiria um modelo generativo (LLM) bem maior.
+- A árvore é uma memória com busca por similaridade (HashEmbedder: contagem de palavras).
+- O transformer é um GPT de caracteres de verdade, escrito à mão em Kotlin, treinado do zero no celular. É pequeno (~0,85 milhão de parâmetros) e começa gerando texto sem sentido; melhora devagar com mais texto e mais passos.
+- Os pesos são criados pelo treino e guardados no banco do app. O que vai no APK é só o código.
 
 ## Limites conhecidos
 - Este código foi escrito sem compilar no ambiente do Claude: o primeiro build pode apontar erros. Se falhar, copie o log do passo "Compilar APK debug" e envie ao Claude.
-- HashEmbedder entende palavras parecidas, não significado. A Etapa 6 resolve isso.
+- HashEmbedder entende palavras parecidas, não significado. O item 6.1 melhora isso.
+- O treino em Kotlin puro é bem mais lento que o PyTorch do Termux. Use batch pequeno (8) e deixe o app aberto. Vocabulário fixo (ASCII + acentos do português): outros caracteres são ignorados.
+- O gradiente escrito à mão foi conferido com gradiente numérico (erro ~1e-5) numa versão de referência em Python; o botão "Autoteste" refaz essa conferência no próprio código Kotlin.

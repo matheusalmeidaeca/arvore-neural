@@ -17,10 +17,11 @@ class Node(
 
 class Point(val id: Long, val series: String, val value: Double, val ts: Long)
 
-class Db(ctx: Context) : SQLiteOpenHelper(ctx, "arvore.db", null, 2) {
+class Db(ctx: Context) : SQLiteOpenHelper(ctx, "arvore.db", null, 3) {
 
     override fun onCreate(d: SQLiteDatabase) {
         createChat(d)
+        createModel(d)
         d.execSQL(
             "CREATE TABLE nodes(id INTEGER PRIMARY KEY AUTOINCREMENT, parent_id INTEGER NOT NULL, " +
                 "title TEXT NOT NULL, content TEXT NOT NULL, embedding BLOB NOT NULL, created_at INTEGER NOT NULL)"
@@ -29,6 +30,10 @@ class Db(ctx: Context) : SQLiteOpenHelper(ctx, "arvore.db", null, 2) {
             "CREATE TABLE points(id INTEGER PRIMARY KEY AUTOINCREMENT, series TEXT NOT NULL, " +
                 "value REAL NOT NULL, ts INTEGER NOT NULL)"
         )
+    }
+
+    private fun createModel(d: SQLiteDatabase) {
+        d.execSQL("CREATE TABLE IF NOT EXISTS model(idx INTEGER PRIMARY KEY, data BLOB NOT NULL)")
     }
 
     private fun createChat(d: SQLiteDatabase) {
@@ -40,6 +45,7 @@ class Db(ctx: Context) : SQLiteOpenHelper(ctx, "arvore.db", null, 2) {
 
     override fun onUpgrade(d: SQLiteDatabase, oldV: Int, newV: Int) {
         if (oldV < 2) createChat(d)
+        if (oldV < 3) createModel(d)
     }
 
     private fun toBlob(a: FloatArray): ByteArray {
@@ -146,6 +152,64 @@ class Db(ctx: Context) : SQLiteOpenHelper(ctx, "arvore.db", null, 2) {
     @Synchronized
     fun clearChat() {
         writableDatabase.delete("chat", null, null)
+    }
+
+    /** Pesos do transformer em pedaços de ~400 KB (o Android limita ~2 MB por linha lida). */
+    @Synchronized
+    fun saveModel(meta: ByteArray, w: FloatArray) {
+        val d = writableDatabase
+        d.beginTransaction()
+        try {
+            d.delete("model", null, null)
+            val m = ContentValues()
+            m.put("idx", -1)
+            m.put("data", meta)
+            d.insert("model", null, m)
+            val chunk = 100_000
+            var idx = 0
+            var off = 0
+            while (off < w.size) {
+                val n = minOf(chunk, w.size - off)
+                val bb = ByteBuffer.allocate(n * 4)
+                bb.asFloatBuffer().put(w, off, n)
+                val cv = ContentValues()
+                cv.put("idx", idx)
+                cv.put("data", bb.array())
+                d.insert("model", null, cv)
+                idx++
+                off += n
+            }
+            d.setTransactionSuccessful()
+        } finally {
+            d.endTransaction()
+        }
+    }
+
+    @Synchronized
+    fun loadModelMeta(): ByteArray? {
+        val c = readableDatabase.rawQuery("SELECT data FROM model WHERE idx=-1", null)
+        return c.use { if (it.moveToFirst()) it.getBlob(0) else null }
+    }
+
+    @Synchronized
+    fun loadModelWeights(into: FloatArray): Boolean {
+        var off = 0
+        val c = readableDatabase.rawQuery("SELECT data FROM model WHERE idx>=0 ORDER BY idx", null)
+        c.use {
+            while (it.moveToNext()) {
+                val fb = ByteBuffer.wrap(it.getBlob(0)).asFloatBuffer()
+                val n = fb.remaining()
+                if (off + n > into.size) return false
+                fb.get(into, off, n)
+                off += n
+            }
+        }
+        return off == into.size
+    }
+
+    @Synchronized
+    fun clearModel() {
+        writableDatabase.delete("model", null, null)
     }
 
     @Synchronized
