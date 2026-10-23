@@ -20,11 +20,11 @@ import kotlin.math.tanh
 /*
  * Mini-transformer próprio (port do mini.py): GPT de caracteres, pré-LayerNorm, atenção causal
  * multi-cabeça, MLP com GELU, AdamW. Treino com backpropagation escrito à mão, tudo em Kotlin.
- * Tamanho igual ao mini.py: T=64, C=128, H=4, L=4. Os pesos aprendidos ficam no banco de dados.
+ * Contexto de 192 caracteres (v7; era 64), C=128, H=4, L=4. Os pesos aprendidos ficam no banco de dados.
  */
 
 class MiniGptConfig(
-    val v: Int, val t: Int = 64, val c: Int = 128, val h: Int = 4, val l: Int = 4,
+    val v: Int, val t: Int = 192, val c: Int = 128, val h: Int = 4, val l: Int = 4,
     /** quantidade de "vetores de galho": cada nó da árvore usa um deles */
     val s: Int = 1024
 )
@@ -558,7 +558,11 @@ class MiniGpt(val cfg: MiniGptConfig) {
         db.saveModel(meta(), w)
     }
 
-    /** Carrega os pesos salvos no banco; devolve false se não houver ou se o tamanho não bater. */
+    /**
+     * Carrega os pesos salvos no banco; devolve false se não houver ou se o tamanho não bater.
+     * Se o modelo salvo tem contexto menor (v6: 64), migra: copia embeddings, vetores de galho e
+     * todas as camadas; as posições novas (além das antigas) começam com valores pequenos aleatórios.
+     */
     fun load(db: Db): Boolean {
         val mb = db.loadModelMeta() ?: return false
         if (mb.size < 40) return false
@@ -573,11 +577,27 @@ class MiniGpt(val cfg: MiniGptConfig) {
         val h = bb.getInt()
         val l = bb.getInt()
         val sl = bb.getInt()
-        if (n != lay.n || v != cfg.v || t != cfg.t || c != cfg.c || h != cfg.h || l != cfg.l || sl != cfg.s) return false
+        if (v != cfg.v || c != cfg.c || h != cfg.h || l != cfg.l || sl != cfg.s) return false
+        if (t != cfg.t) return if (t < cfg.t) migrate(db, st, ls, n, t) else false
+        if (n != lay.n) return false
         if (!db.loadModelWeights(w)) {
             initWeights(Random(1))
             return false
         }
+        step = st
+        lastLoss = ls
+        return true
+    }
+
+    private fun migrate(db: Db, st: Int, ls: Float, n: Int, oldT: Int): Boolean {
+        val oldLay = Layout(MiniGptConfig(v = cfg.v, t = oldT, c = cfg.c, h = cfg.h, l = cfg.l, s = cfg.s))
+        if (oldLay.n != n) return false
+        val old = FloatArray(n)
+        if (!db.loadModelWeights(old)) return false
+        val c = cfg.c
+        System.arraycopy(old, oldLay.tok, w, lay.tok, cfg.v * c)
+        System.arraycopy(old, oldLay.pos, w, lay.pos, oldT * c)
+        System.arraycopy(old, oldLay.node, w, lay.node, n - oldLay.node)
         step = st
         lastLoss = ls
         return true
@@ -640,6 +660,7 @@ class MiniLab(private val db: Db) {
     @Volatile private var corpCache: IntArray? = null
 
     /** Texto do treino em massa: um documento por linha; "\n" (id 0) separa os documentos. */
+    @Synchronized
     private fun corpusTokens(): IntArray {
         val c = corpCache
         if (c != null) return c
@@ -655,12 +676,27 @@ class MiniLab(private val db: Db) {
 
     fun corpusChars(): Int = db.corpusChars()
 
+    /** Acrescenta linhas ao corpus (cada bloco vira uma linha). Mantém o cache em memória sem reler tudo. */
+    @Synchronized
     fun addCorpus(blocks: List<String>): Int {
         val sb = StringBuilder()
         for (b in blocks) sb.append(b).append('\n')
-        val n = db.addCorpus(sb.toString(), 8_000_000)
-        corpCache = null
+        val text = sb.toString()
+        val n = db.addCorpus(text, 8_000_000)
+        val c = corpCache
+        if (n != text.length) {
+            corpCache = null
+        } else if (c != null) {
+            val enc = Vocab.encode(text)
+            val out = c.copyOf(c.size + enc.size)
+            System.arraycopy(enc, 0, out, c.size, enc.size)
+            corpCache = out
+        }
         return n
+    }
+
+    fun saveNow() {
+        synchronized(lock) { gpt.save(db) }
     }
 
     fun clearCorpus() {
@@ -674,7 +710,12 @@ class MiniLab(private val db: Db) {
         val out = ArrayList<Seq>()
         for (b in 0 until batch) {
             if ((focus == null || b % 2 == 1) && hasCorp && (docs.isEmpty() || rnd.nextBoolean())) {
-                val start = rnd.nextInt(corp.size - t - 1)
+                var start = rnd.nextInt(corp.size - t - 1)
+                // alinha ao começo de uma linha (id 0 = nova linha), para o diálogo começar em "@u" ou "@a"
+                var k = start
+                val lim = minOf(start + 120, corp.size - t - 2)
+                while (k < lim && corp[k] != 0) k++
+                if (k < lim) start = k + 1
                 out.add(Seq(IntArray(0), corp.copyOfRange(start, start + t), corp.copyOfRange(start + 1, start + t + 1)))
                 continue
             }
@@ -688,7 +729,7 @@ class MiniLab(private val db: Db) {
     }
 
     /** Treina `steps` passos (nós da árvore + corpus). O modelo só fica travado durante cada passo. */
-    fun train(steps: Int, batch: Int, focusId: Long, stop: AtomicBoolean?, onStep: (Int, Float) -> Unit): Int {
+    fun train(steps: Int, batch: Int, focusId: Long, stop: AtomicBoolean?, saveAtEnd: Boolean = true, onStep: (Int, Float) -> Unit): Int {
         val ds = docs()
         val corp = corpusTokens()
         if (ds.isEmpty() && corp.size <= gpt.cfg.t + 2) return 0
@@ -702,7 +743,7 @@ class MiniLab(private val db: Db) {
             onStep(i, loss)
             if (i % 100 == 0) synchronized(lock) { gpt.save(db) }
         }
-        synchronized(lock) { gpt.save(db) }
+        if (saveAtEnd) synchronized(lock) { gpt.save(db) }
         return i
     }
 
@@ -710,7 +751,7 @@ class MiniLab(private val db: Db) {
     fun learnInBackground(nodeId: Long, steps: Int = 8) {
         bg.execute {
             try {
-                train(steps, 8, nodeId, null) { _, _ -> }
+                train(steps, 4, nodeId, null) { _, _ -> }
             } catch (e: Exception) {
             }
         }
@@ -722,6 +763,16 @@ class MiniLab(private val db: Db) {
         for (n in db.allNodes()) byId[n.id] = n
         val slots = pathSlots(byId, nodeId)
         return synchronized(lock) { gpt.generate(slots, "", maxNew, 0.7f, Random(), true) }.trim()
+    }
+
+    /** Resposta de conversa: o prompt é o diálogo recente ("@u ...\n@a "); o galho da árvore condiciona o modelo. */
+    fun generateChat(nodeId: Long, prompt: String, maxNew: Int = 90): String {
+        val slots = if (nodeId > 0) {
+            val byId = HashMap<Long, Node>()
+            for (n in db.allNodes()) byId[n.id] = n
+            pathSlots(byId, nodeId)
+        } else IntArray(0)
+        return synchronized(lock) { gpt.generate(slots, prompt, maxNew, 0.7f, Random(), true) }.trim()
     }
 
     fun generateFree(prompt: String, maxNew: Int): String =

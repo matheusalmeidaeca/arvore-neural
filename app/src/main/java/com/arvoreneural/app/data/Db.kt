@@ -221,6 +221,12 @@ class Db(ctx: Context) : SQLiteOpenHelper(ctx, "arvore.db", null, 4) {
     }
 
     @Synchronized
+    fun nodeCount(): Int {
+        val c = readableDatabase.rawQuery("SELECT COUNT(*) FROM nodes", null)
+        return c.use { if (it.moveToFirst()) it.getInt(0) else 0 }
+    }
+
+    @Synchronized
     fun corpusChars(): Int {
         val c = readableDatabase.rawQuery("SELECT COALESCE(SUM(LENGTH(text)),0) FROM corpus", null)
         return c.use { if (it.moveToFirst()) it.getInt(0) else 0 }

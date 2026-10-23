@@ -81,6 +81,30 @@ class Tree(private val db: Db, private val emb: Embedder) {
             " nós representativos. Agora toque em Treinar."
     }
 
+    /** Cria até maxNodes nós representativos (assuntos bem diferentes entre si) a partir dos blocos. */
+    fun addRepresentatives(blocks: List<String>, maxNodes: Int): Int {
+        val reps = ArrayList<FloatArray>()
+        var nodes = 0
+        for (i in blocks.indices.shuffled(java.util.Random(7))) {
+            if (nodes >= maxNodes) break
+            val b = blocks[i]
+            if (b.length < 20) continue
+            val e = emb.embed(b)
+            var dup = false
+            for (r in reps) {
+                if (cosine(e, r) >= 0.5f) {
+                    dup = true
+                    break
+                }
+            }
+            if (dup) continue
+            reps.add(e)
+            learn(b)
+            nodes++
+        }
+        return nodes
+    }
+
     fun ask(q: String, k: Int = 3): List<Pair<Node, Float>> {
         val e = emb.embed(q)
         return db.allNodes()
@@ -125,7 +149,7 @@ class Tree(private val db: Db, private val emb: Embedder) {
     }
 
     /** Remove carimbos de data/hora e corta em fim de frase ou de palavra. */
-    private fun tidy(s: String, max: Int): String {
+    fun tidy(s: String, max: Int): String {
         val t = s.replace(stamp, "").replace(Regex("\\s+"), " ").trim()
         if (t.length <= max) return t
         val cut = t.substring(0, max)

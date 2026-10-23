@@ -26,3 +26,14 @@
 6. No GitHub: aba Actions → "Build APK" → aguarde ~5 min → Artifacts → arvore-neural-apk. Baixe, extraia o zip e instale o app-debug.apk (permita "fontes desconhecidas").
 
 Para atualizar depois: git add . && git commit -m "msg" && git push
+
+## Atualizar da v6 para a v7
+1. No Termux, dentro da pasta do projeto, apague os arquivos antigos do código e descompacte a v7 por cima:
+   cd ~/arvore-neural && unzip -o ~/storage/downloads/ArvoreNeural_v7.zip
+2. git add . && git commit -m "v7: osmose" && git push
+3. Aguarde o GitHub Actions e instale o novo APK por cima do antigo (os dados e o transformer treinado ficam).
+
+## Usar a osmose
+- Aba Aprender › Osmose: digite seu nome como aparece no WhatsApp.
+- No WhatsApp: conversa › ⋮ › Mais › Exportar conversa › Sem mídia › Árvore Neural.
+- Deixe o app aberto (e, de preferência, na tomada): ele treina sozinho em pequenos passos.

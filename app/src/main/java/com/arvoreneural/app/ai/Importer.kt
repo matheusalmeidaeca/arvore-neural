@@ -47,6 +47,69 @@ object Importer {
         return out
     }
 
+    private fun clipTurn(s: String, max: Int = 160): String {
+        val t = s.replace(Regex("\\s+"), " ").trim()
+        if (t.length <= max) return t
+        val cut = t.substring(0, max)
+        val sp = cut.lastIndexOf(' ')
+        return if (sp > max / 2) cut.substring(0, sp) else cut
+    }
+
+    /**
+     * Diálogo para o transformer: cada fala vira uma linha "@u texto" (o usuário) ou "@a texto" (a IA).
+     * me = parte do nome do usuário no arquivo. aiPlaysMe = false: a IA imita as outras pessoas;
+     * true: a IA imita o usuário. Mensagens seguidas da mesma pessoa viram uma fala (até ~160 caracteres).
+     * Uma linha vazia separa os dias (conversas diferentes).
+     */
+    fun dialogue(raw: String, me: String, aiPlaysMe: Boolean): List<String> {
+        class M(val sender: String, val text: StringBuilder, val date: String)
+        val msgs = ArrayList<M>()
+        for (l in raw.lineSequence()) {
+            val line = clean(l)
+            val m = waAndroid.matchEntire(line) ?: waIos.matchEntire(line)
+            if (m != null) {
+                val rest = m.groupValues[3]
+                val date = m.groupValues[1]
+                val i = rest.indexOf(": ")
+                if (i in 1..40) msgs.add(M(rest.substring(0, i).trim(), StringBuilder(rest.substring(i + 2)), date))
+                else msgs.add(M("", StringBuilder(), date))
+            } else if (msgs.isNotEmpty()) {
+                msgs.last().text.append(' ').append(line.trim())
+            }
+        }
+        val key = me.trim().lowercase()
+        val out = ArrayList<String>()
+        val cur = StringBuilder()
+        var curTag = ""
+        var lastDate = ""
+        fun flush() {
+            if (cur.isNotEmpty()) {
+                out.add(curTag + clipTurn(cur.toString()))
+                cur.clear()
+            }
+        }
+        for (m in msgs) {
+            if (m.sender.isEmpty()) continue
+            val txt = m.text.toString().trim()
+            if (txt.isEmpty() || isNoise(txt) || txt.contains("http")) continue
+            val isMe = m.sender.lowercase().contains(key)
+            val isAi = if (aiPlaysMe) isMe else !isMe
+            val tag = if (isAi) "@a " else "@u "
+            if (m.date != lastDate) {
+                flush()
+                if (lastDate.isNotEmpty()) out.add("")
+                lastDate = m.date
+            }
+            if (tag != curTag && cur.isNotEmpty()) flush()
+            curTag = tag
+            if (cur.isNotEmpty()) cur.append(' ')
+            cur.append(txt)
+            if (cur.length >= 160) flush()
+        }
+        flush()
+        return out
+    }
+
     /** onlyFrom: parte do nome de quem falou (vazio = todos). Junta mensagens seguidas da mesma pessoa. */
     fun whatsappBlocks(raw: String, onlyFrom: String): List<String> {
         val msgs = mutableListOf<Pair<String, StringBuilder>>()

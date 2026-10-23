@@ -1,7 +1,9 @@
 package com.arvoreneural.app
 
+import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
@@ -31,6 +33,7 @@ import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -53,27 +56,69 @@ import androidx.compose.ui.unit.dp
 import com.arvoreneural.app.ai.Forecaster
 import com.arvoreneural.app.ai.HashEmbedder
 import com.arvoreneural.app.ai.MiniLab
+import com.arvoreneural.app.ai.Osmose
 import com.arvoreneural.app.ai.miniSelfTest
 import com.arvoreneural.app.ai.Tree
 import com.arvoreneural.app.data.Db
 import com.arvoreneural.app.data.Node
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 class MainActivity : ComponentActivity() {
+    private lateinit var osmose: Osmose
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         val db = Db(applicationContext)
         val tree = Tree(db, HashEmbedder())
         val lab = MiniLab(db)
         tree.lab = lab
-        setContent { MaterialTheme { App(db, tree, lab) } }
+        osmose = Osmose(applicationContext, db, tree, lab)
+        osmose.start()
+        setContent { MaterialTheme { App(db, tree, lab, osmose) } }
+        if (savedInstanceState == null) handleShare(intent)
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        handleShare(intent)
+    }
+
+    override fun onResume() {
+        super.onResume()
+        osmose.setForeground(true)
+    }
+
+    override fun onPause() {
+        super.onPause()
+        osmose.setForeground(false)
+    }
+
+    /** Texto ou arquivo .txt compartilhado de outro app (WhatsApp, navegador…): o app absorve. */
+    private fun handleShare(i: Intent?) {
+        if (i == null || i.action != Intent.ACTION_SEND) return
+        val text = i.getStringExtra(Intent.EXTRA_TEXT)
+        @Suppress("DEPRECATION")
+        val uri = i.getParcelableExtra<Uri>(Intent.EXTRA_STREAM)
+        if (text == null && uri == null) return
+        i.action = null
+        Thread {
+            val raw = text ?: try {
+                contentResolver.openInputStream(uri!!)?.bufferedReader()?.readText() ?: ""
+            } catch (e: Exception) {
+                ""
+            }
+            val msg = osmose.absorb(raw)
+            runOnUiThread { Toast.makeText(this, msg, Toast.LENGTH_LONG).show() }
+        }.start()
     }
 }
 
 @Composable
-fun App(db: Db, tree: Tree, lab: MiniLab) {
+fun App(db: Db, tree: Tree, lab: MiniLab, osmose: Osmose) {
     var tab by remember { mutableIntStateOf(0) }
     var version by remember { mutableIntStateOf(0) }
     val msgs = remember { mutableStateListOf<Msg>() }
@@ -99,11 +144,11 @@ fun App(db: Db, tree: Tree, lab: MiniLab) {
     ) { pad ->
         Box(Modifier.padding(pad).padding(16.dp).fillMaxSize()) {
             when (tab) {
-                0 -> ChatScreen(db, tree, msgs) { version++ }
+                0 -> ChatScreen(db, osmose, msgs) { version++ }
                 1 -> TreeScreen(db, tree, version) { version++ }
-                2 -> LearnScreen(tree, db) { version++ }
+                2 -> LearnScreen(tree, db, osmose) { version++ }
                 3 -> ForecastScreen(db)
-                else -> TransformerScreen(lab, tree)
+                else -> TransformerScreen(lab, tree, osmose)
             }
         }
     }
@@ -112,8 +157,9 @@ fun App(db: Db, tree: Tree, lab: MiniLab) {
 class Msg(val fromUser: Boolean, val text: String)
 
 @Composable
-fun ChatScreen(db: Db, tree: Tree, msgs: MutableList<Msg>, onChange: () -> Unit) {
+fun ChatScreen(db: Db, osmose: Osmose, msgs: MutableList<Msg>, onChange: () -> Unit) {
     var input by remember { mutableStateOf("") }
+    var liked by remember { mutableStateOf(setOf<Int>()) }
     val scope = rememberCoroutineScope()
     val listState = rememberLazyListState()
     LaunchedEffect(msgs.size) {
@@ -123,6 +169,7 @@ fun ChatScreen(db: Db, tree: Tree, msgs: MutableList<Msg>, onChange: () -> Unit)
         if (msgs.isNotEmpty()) {
             TextButton(onClick = {
                 msgs.clear()
+                liked = emptySet()
                 scope.launch { withContext(Dispatchers.IO) { db.clearChat() } }
             }) { Text("Limpar conversa") }
         }
@@ -133,13 +180,14 @@ fun ChatScreen(db: Db, tree: Tree, msgs: MutableList<Msg>, onChange: () -> Unit)
         ) {
             if (msgs.isEmpty()) {
                 item {
-                    Text("Converse comigo! Frases afirmativas eu aprendo. Perguntas (com ?) eu respondo com o que já sei.")
+                    Text("Converse comigo! Eu respondo com o que já aprendi e continuo aprendendo com tudo que você escreve (osmose). Toque em 👍 nas respostas boas.")
                 }
             }
-            items(msgs) { m ->
-                Row(
+            items(msgs.size) { idx ->
+                val m = msgs[idx]
+                Column(
                     Modifier.fillMaxWidth(),
-                    horizontalArrangement = if (m.fromUser) Arrangement.End else Arrangement.Start
+                    horizontalAlignment = if (m.fromUser) Alignment.End else Alignment.Start
                 ) {
                     Surface(
                         color = if (m.fromUser) MaterialTheme.colorScheme.primaryContainer
@@ -147,6 +195,15 @@ fun ChatScreen(db: Db, tree: Tree, msgs: MutableList<Msg>, onChange: () -> Unit)
                         shape = RoundedCornerShape(12.dp),
                         modifier = Modifier.widthIn(max = 300.dp)
                     ) { Text(m.text, Modifier.padding(10.dp)) }
+                    if (!m.fromUser && idx > 0) {
+                        TextButton(onClick = {
+                            if (idx !in liked) {
+                                liked = liked + idx
+                                val snap = msgs.map { it.fromUser to it.text }
+                                scope.launch { withContext(Dispatchers.IO) { osmose.like(snap, idx) } }
+                            }
+                        }) { Text(if (idx in liked) "✓ guardado" else "👍 gostei") }
+                    }
                 }
             }
         }
@@ -166,7 +223,7 @@ fun ChatScreen(db: Db, tree: Tree, msgs: MutableList<Msg>, onChange: () -> Unit)
                     scope.launch {
                         val r = withContext(Dispatchers.IO) {
                             db.addChat(true, t)
-                            val a = tree.chat(t)
+                            val a = osmose.chatTurn(t)
                             db.addChat(false, a)
                             a
                         }
@@ -233,7 +290,7 @@ fun TreeScreen(db: Db, tree: Tree, version: Int, onChange: () -> Unit) {
 }
 
 @Composable
-fun LearnScreen(tree: Tree, db: Db, onChange: () -> Unit) {
+fun LearnScreen(tree: Tree, db: Db, osmose: Osmose, onChange: () -> Unit) {
     val ctx = LocalContext.current
     var text by remember { mutableStateOf("") }
     var msg by remember { mutableStateOf("") }
@@ -252,7 +309,11 @@ fun LearnScreen(tree: Tree, db: Db, onChange: () -> Unit) {
             }
         }
     }
-    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+    Column(
+        modifier = Modifier.verticalScroll(rememberScrollState()),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        OsmoseCard(osmose, onChange)
         OutlinedTextField(
             value = text,
             onValueChange = { text = it },
@@ -288,6 +349,67 @@ fun LearnScreen(tree: Tree, db: Db, onChange: () -> Unit) {
                 }
             }
         }) { Text(if (confirmClear) "Toque de novo para confirmar" else "Apagar toda a árvore") }
+    }
+}
+
+@Composable
+fun OsmoseCard(osmose: Osmose, onChange: () -> Unit) {
+    val ctx = LocalContext.current
+    val scope = rememberCoroutineScope()
+    var on by remember { mutableStateOf(osmose.enabled) }
+    var name by remember { mutableStateOf(osmose.myName) }
+    var imita by remember { mutableStateOf(osmose.aiPlaysMe) }
+    var detail by remember { mutableStateOf(osmose.detail) }
+    var status by remember { mutableStateOf("") }
+    var msg by remember { mutableStateOf("") }
+    LaunchedEffect(Unit) {
+        while (true) {
+            status = withContext(Dispatchers.IO) { osmose.status() }
+            delay(2000)
+        }
+    }
+    val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? ->
+        if (uri != null) {
+            scope.launch {
+                msg = "Absorvendo…"
+                msg = withContext(Dispatchers.IO) {
+                    val raw = ctx.contentResolver.openInputStream(uri)?.bufferedReader()?.readText() ?: ""
+                    osmose.absorb(raw)
+                }
+                onChange()
+            }
+        }
+    }
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Text("🌊 Osmose", style = MaterialTheme.typography.titleMedium)
+        Text(status, style = MaterialTheme.typography.bodySmall)
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Switch(checked = on, onCheckedChange = { on = it; osmose.enabled = it })
+            Spacer(Modifier.width(8.dp))
+            Text("Aprender sozinho com o app aberto")
+        }
+        OutlinedTextField(
+            value = name,
+            onValueChange = { name = it; osmose.myName = it },
+            label = { Text("Seu nome nas conversas do WhatsApp") },
+            modifier = Modifier.fillMaxWidth()
+        )
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Switch(checked = imita, onCheckedChange = { imita = it; osmose.aiPlaysMe = it })
+            Spacer(Modifier.width(8.dp))
+            Text("A IA fala como eu (em vez da outra pessoa). Vale para as próximas importações.")
+        }
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Switch(checked = detail, onCheckedChange = { detail = it; osmose.detail = it })
+            Spacer(Modifier.width(8.dp))
+            Text("Mostrar detalhes nas respostas")
+        }
+        Button(onClick = { picker.launch(arrayOf("text/*")) }) { Text("Absorver conversa ou texto") }
+        Text(msg)
+        Text(
+            "Dica: no WhatsApp, abra uma conversa › Exportar conversa › Árvore Neural. Qualquer texto compartilhado com o app também é absorvido.",
+            style = MaterialTheme.typography.bodySmall
+        )
     }
 }
 
@@ -338,7 +460,7 @@ fun ForecastScreen(db: Db) {
 }
 
 @Composable
-fun TransformerScreen(lab: MiniLab, tree: Tree) {
+fun TransformerScreen(lab: MiniLab, tree: Tree, osmose: Osmose) {
     var status by remember { mutableStateOf("Passos treinados: " + lab.gpt.step) }
     var training by remember { mutableStateOf(false) }
     var busy by remember { mutableStateOf(false) }
@@ -381,12 +503,14 @@ fun TransformerScreen(lab: MiniLab, tree: Tree) {
             busy = true
             training = true
             stop.set(false)
+            osmose.pauseNow()
+            osmose.manual.set(true)
             val msg = withContext(Dispatchers.Default) {
                 if (lab.corpusSize() < 80) {
                     return@withContext "Ensine mais texto (ou importe um arquivo) antes de treinar."
                 }
                 val t0 = System.currentTimeMillis()
-                lab.train(total, 8, -1L, stop) { i, loss ->
+                lab.train(total, 4, -1L, stop) { i, loss ->
                     val sec = (System.currentTimeMillis() - t0) / 1000
                     val ls = "%.3f".format(loss)
                     status = "passo " + lab.gpt.step + " | perda " + ls + " | " + i + "/" + total + " | " + sec + "s"
@@ -395,6 +519,7 @@ fun TransformerScreen(lab: MiniLab, tree: Tree) {
                 "Treino concluído: " + lab.gpt.step + " passos no total, perda " + fin + "."
             }
             status = msg
+            osmose.manual.set(false)
             training = false
             busy = false
         }
@@ -405,7 +530,7 @@ fun TransformerScreen(lab: MiniLab, tree: Tree) {
         verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
         Text(
-            "Seu mini-transformer em Kotlin: " + lab.gpt.lay.n + " parâmetros (4 camadas, 128 dims, 4 cabeças, contexto 64). Cada nó da árvore tem um vetor próprio dentro do transformer, somado aos dos seus ancestrais: a árvore faz parte do modelo. Aprende sozinho a cada frase que você ensina na Conversa; aqui você treina mais fundo. Deixe o app aberto durante o treino.",
+            "Seu mini-transformer em Kotlin: " + lab.gpt.lay.n + " parâmetros (4 camadas, 128 dims, 4 cabeças, contexto 192). Cada nó da árvore tem um vetor próprio dentro do transformer, somado aos dos seus ancestrais: a árvore faz parte do modelo. Ele aprende sozinho (osmose, aba Aprender); aqui você treina mais fundo à mão. Deixe o app aberto durante o treino.",
             style = MaterialTheme.typography.bodyMedium
         )
         Text(status, style = MaterialTheme.typography.titleSmall)
