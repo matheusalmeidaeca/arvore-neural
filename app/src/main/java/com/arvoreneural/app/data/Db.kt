@@ -79,6 +79,29 @@ class Db(ctx: Context) : SQLiteOpenHelper(ctx, "arvore.db", null, 4) {
     }
 
     @Synchronized
+    fun updateNode(id: Long, title: String, content: String, emb: FloatArray) {
+        val cv = ContentValues()
+        cv.put("title", title)
+        cv.put("content", content)
+        cv.put("embedding", toBlob(emb))
+        writableDatabase.update("nodes", cv, "id=?", arrayOf(id.toString()))
+    }
+
+    /** Roda várias gravações numa transação só (importar centenas de nós fica rápido). */
+    @Synchronized
+    fun <T> batch(block: () -> T): T {
+        val w = writableDatabase
+        w.beginTransaction()
+        try {
+            val r = block()
+            w.setTransactionSuccessful()
+            return r
+        } finally {
+            w.endTransaction()
+        }
+    }
+
+    @Synchronized
     fun updateEmbedding(id: Long, emb: FloatArray) {
         val cv = ContentValues()
         cv.put("embedding", toBlob(emb))

@@ -36,6 +36,11 @@ App Android nativo que (1) organiza conhecimento numa árvore, (2) usa modelo de
   - Backup: Aprender › Backup salva/restaura o arquivo `arvore.db` inteiro (pesos, corpus, árvore, conversa). Restaurar fecha o app (`frozen` impede gravar por cima).
   - Assinatura: `app/build.gradle.kts` usa `arvore.jks` na raiz se existir; o workflow grava o arquivo a partir dos Secrets KS_BASE64, KS_PASS, KS_ALIAS, KS_KEYPASS e roda `assembleRelease`. Sem Secrets, cai em `assembleDebug`. `*.jks` está no .gitignore.
   - A Activity não é mais recriada ao girar a tela (`configChanges`).
+- [x] 7.2 v7.2 — editar a árvore à mão:
+  - Aba Árvore: tocar no texto de um nó edita; "+" cria filho; "+ Raiz" cria nó raiz; "Importar lista" aceita lista indentada (cada `_` no começo = um nível; tab ou 2 espaços também valem). Reimportar reaproveita nós iguais (mesmo pai e texto).
+  - `Tree.addNode`, `Tree.editNode`, `Tree.importOutline`; `Db.updateNode`, `Db.batch` (transação). Com "treinar com os caminhos", cada nó novo gera uma linha no corpus como `B > Br > Bra`.
+  - O texto de cada nó é o que o transformer aprende a reproduzir, condicionado ao galho (vetores dos ancestrais somados, até 8 níveis).
+  - `exemplo_abecedario.txt` na raiz do zip: lista de exemplo para importar.
 - [ ] 8. Polimento: ícone, gráfico da série, busca por ramo, cache de atenção (KV) para responder mais rápido
 
 ## Arquivos

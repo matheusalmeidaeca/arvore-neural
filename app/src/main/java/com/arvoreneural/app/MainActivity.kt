@@ -32,6 +32,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
@@ -238,12 +239,130 @@ fun flatten(nodes: List<Node>): List<Pair<Node, Int>> {
 
 @Composable
 fun TreeScreen(db: Db, tree: Tree, version: Int, onChange: () -> Unit) {
+    val ctx = LocalContext.current
     var nodes by remember { mutableStateOf(listOf<Node>()) }
     var q by remember { mutableStateOf("") }
     var answers by remember { mutableStateOf(listOf<Pair<Node, Float>>()) }
+    var editing by remember { mutableStateOf<Node?>(null) }
+    var editText by remember { mutableStateOf("") }
+    var addParent by remember { mutableStateOf(-1L) }
+    var addText by remember { mutableStateOf("") }
+    var showImport by remember { mutableStateOf(false) }
+    var impText by remember { mutableStateOf("") }
+    var impPaths by remember { mutableStateOf(true) }
     val scope = rememberCoroutineScope()
     LaunchedEffect(version) { nodes = withContext(Dispatchers.IO) { db.allNodes() } }
     val flat = remember(nodes) { flatten(nodes) }
+    val filePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? ->
+        if (uri != null) {
+            val app = ctx.applicationContext
+            Engine.scope.launch(Dispatchers.IO) {
+                impText = try {
+                    app.contentResolver.openInputStream(uri)?.bufferedReader()?.readText() ?: ""
+                } catch (e: Throwable) {
+                    ""
+                }
+            }
+        }
+    }
+
+    val ed = editing
+    if (ed != null) {
+        AlertDialog(
+            onDismissRequest = { editing = null },
+            title = { Text("Editar nó") },
+            text = {
+                OutlinedTextField(
+                    value = editText,
+                    onValueChange = { editText = it },
+                    modifier = Modifier.fillMaxWidth().heightIn(min = 100.dp)
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    val id = ed.id
+                    val t = editText
+                    editing = null
+                    Engine.scope.launch(Dispatchers.IO) {
+                        tree.editNode(id, t)
+                        Engine.treeMsg = "Nó editado."
+                        onChange()
+                    }
+                }) { Text("Salvar") }
+            },
+            dismissButton = { TextButton(onClick = { editing = null }) { Text("Cancelar") } }
+        )
+    }
+    if (addParent >= 0L) {
+        AlertDialog(
+            onDismissRequest = { addParent = -1L },
+            title = { Text(if (addParent == 0L) "Novo nó raiz" else "Novo nó filho") },
+            text = {
+                OutlinedTextField(
+                    value = addText,
+                    onValueChange = { addText = it },
+                    modifier = Modifier.fillMaxWidth().heightIn(min = 100.dp)
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    val pid = addParent
+                    val t = addText
+                    addParent = -1L
+                    addText = ""
+                    Engine.scope.launch(Dispatchers.IO) {
+                        val id = tree.addNode(pid, t)
+                        Engine.treeMsg = if (id > 0) "Nó criado." else "Escreva algo para criar o nó."
+                        onChange()
+                    }
+                }) { Text("Criar") }
+            },
+            dismissButton = { TextButton(onClick = { addParent = -1L }) { Text("Cancelar") } }
+        )
+    }
+    if (showImport) {
+        AlertDialog(
+            onDismissRequest = { showImport = false },
+            title = { Text("Importar lista indentada") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        "Um nó por linha. Cada _ no começo é um nível: B, _Br, __Bra. Cole aqui ou escolha um .txt.",
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                    OutlinedTextField(
+                        value = impText,
+                        onValueChange = { impText = it },
+                        modifier = Modifier.fillMaxWidth().heightIn(min = 160.dp)
+                    )
+                    TextButton(onClick = { filePicker.launch(arrayOf("text/*")) }) { Text("Escolher arquivo .txt") }
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Switch(checked = impPaths, onCheckedChange = { impPaths = it })
+                        Spacer(Modifier.width(8.dp))
+                        Text("Treinar também com os caminhos (B > Br > Bra)", style = MaterialTheme.typography.bodySmall)
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    val raw = impText
+                    val withPaths = impPaths
+                    showImport = false
+                    impText = ""
+                    Engine.treeMsg = "Importando…"
+                    Engine.scope.launch(Dispatchers.IO) {
+                        Engine.treeMsg = try {
+                            tree.importOutline(raw, withPaths)
+                        } catch (e: Throwable) {
+                            "Erro ao importar: " + (e.message ?: "")
+                        }
+                        onChange()
+                    }
+                }) { Text("Importar") }
+            },
+            dismissButton = { TextButton(onClick = { showImport = false }) { Text("Cancelar") } }
+        )
+    }
 
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         OutlinedTextField(
@@ -252,18 +371,30 @@ fun TreeScreen(db: Db, tree: Tree, version: Int, onChange: () -> Unit) {
             label = { Text("Pergunte à árvore") },
             modifier = Modifier.fillMaxWidth()
         )
-        Button(onClick = {
-            scope.launch { answers = withContext(Dispatchers.IO) { tree.ask(q) } }
-        }) { Text("Buscar") }
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Button(onClick = {
+                scope.launch { answers = withContext(Dispatchers.IO) { tree.ask(q) } }
+            }) { Text("Buscar") }
+            Button(onClick = { addText = ""; addParent = 0L }) { Text("+ Raiz") }
+            Button(onClick = { showImport = true }) { Text("Importar lista") }
+        }
+        if (Engine.treeMsg.isNotEmpty()) Text(Engine.treeMsg, style = MaterialTheme.typography.bodySmall)
         if (answers.isNotEmpty()) {
             Text("Mais parecidos:", style = MaterialTheme.typography.titleSmall)
             answers.forEach { (n, s) -> Text("• ${n.content.take(140)} (${(s * 100).toInt()}%)") }
         }
-        Text("${nodes.size} nós na árvore", style = MaterialTheme.typography.titleSmall)
+        Text("${nodes.size} nós na árvore. Toque no texto para editar, + para filho, ✕ para apagar.", style = MaterialTheme.typography.titleSmall)
         LazyColumn {
             items(flat) { (n, d) ->
-                Row(Modifier.fillMaxWidth().padding(start = (d * 16).dp)) {
-                    Text(n.title, modifier = Modifier.weight(1f).padding(top = 12.dp))
+                Row(
+                    Modifier.fillMaxWidth().padding(start = (minOf(d, 10) * 16).dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    TextButton(
+                        onClick = { editText = n.content; editing = n },
+                        modifier = Modifier.weight(1f)
+                    ) { Text(n.title, modifier = Modifier.fillMaxWidth()) }
+                    TextButton(onClick = { addText = ""; addParent = n.id }) { Text("+") }
                     TextButton(onClick = {
                         scope.launch {
                             withContext(Dispatchers.IO) { db.deleteNode(n.id) }

@@ -59,6 +59,7 @@ object Engine {
     var learnMsg by mutableStateOf("")
     var osmoseMsg by mutableStateOf("")
     var backupMsg by mutableStateOf("")
+    var treeMsg by mutableStateOf("")
 
     private val chatLock = Any()
 
