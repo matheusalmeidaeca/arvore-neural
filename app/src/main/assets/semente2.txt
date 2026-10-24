@@ -1,0 +1,356 @@
+@u o que você quer fazer hoje?
+@a Quero aprender mais palavras. E você?
+
+@u o que eu posso fazer para você aprender mais?
+@a Converse comigo e me mostre textos. Quanto mais variado, melhor.
+
+@u como está o tempo?
+@a Eu não vejo o céu. Se você me contar, eu anoto.
+
+@u está chovendo
+@a Então é um bom dia para ficar em casa e conversar.
+
+@u está calor
+@a Beba bastante água e procure um lugar com sombra.
+
+@u está frio
+@a Vista um casaco e tome algo quente.
+
+@u o que você acha de chuva?
+@a Acho que a chuva ajuda as árvores a crescerem.
+
+@u o que as árvores precisam?
+@a Água, luz do sol e terra boa.
+
+@u o que é uma raiz?
+@a É a parte da planta que fica debaixo da terra e puxa a água.
+
+@u o que é uma folha?
+@a É a parte da planta que pega a luz do sol para fazer comida.
+
+@u por que o céu é azul?
+@a Porque o ar espalha mais a luz azul do sol do que as outras cores.
+
+@u por que a noite é escura?
+@a Porque o lado da Terra onde você está fica virado para longe do sol.
+
+@u quantas horas tem um dia?
+@a Um dia tem vinte e quatro horas.
+
+@u quantos minutos tem uma hora?
+@a Uma hora tem sessenta minutos.
+
+@u quantos segundos tem um minuto?
+@a Um minuto tem sessenta segundos.
+
+@u quantos dias tem um ano?
+@a Um ano tem trezentos e sessenta e cinco dias, ou trezentos e sessenta e seis nos anos bissextos.
+
+@u quais são os dias da semana?
+@a Domingo, segunda, terça, quarta, quinta, sexta e sábado.
+
+@u quais são os meses do ano?
+@a Janeiro, fevereiro, março, abril, maio, junho, julho, agosto, setembro, outubro, novembro e dezembro.
+
+@u quais são as estações do ano?
+@a Primavera, verão, outono e inverno.
+
+@u quanto é três vezes quatro?
+@a Três vezes quatro são doze.
+
+@u quanto é dez menos três?
+@a Dez menos três são sete.
+
+@u quanto é vinte dividido por quatro?
+@a Vinte dividido por quatro são cinco.
+
+@u quanto é um mais um?
+@a Um mais um são dois.
+
+@u quanto é cem mais cem?
+@a Cem mais cem são duzentos.
+
+@u qual é o maior oceano?
+@a O maior oceano é o Pacífico.
+
+@u qual é o maior país do mundo?
+@a A Rússia é o maior país do mundo em área.
+
+@u qual é o rio mais longo do Brasil?
+@a O rio Amazonas é o maior do Brasil.
+
+@u qual é a capital da Argentina?
+@a A capital da Argentina é Buenos Aires.
+
+@u qual é a capital de Portugal?
+@a A capital de Portugal é Lisboa.
+
+@u qual é a capital do Japão?
+@a A capital do Japão é Tóquio.
+
+@u qual é a capital da Itália?
+@a A capital da Itália é Roma.
+
+@u qual língua se fala no Brasil?
+@a No Brasil se fala português.
+
+@u qual é a moeda do Brasil?
+@a A moeda do Brasil é o real.
+
+@u quantos estados tem o Brasil?
+@a O Brasil tem vinte e seis estados e o Distrito Federal.
+
+@u qual é o animal mais rápido?
+@a O guepardo é o mais rápido em terra.
+
+@u qual é o maior animal?
+@a A baleia azul é o maior animal do mundo.
+
+@u o que os pássaros comem?
+@a Sementes, frutas e insetos, conforme a espécie.
+
+@u o que as abelhas fazem?
+@a Elas fazem mel e ajudam as flores a virarem frutos.
+
+@u o que é uma semente?
+@a É de onde nasce uma nova planta.
+
+@u o que é um computador?
+@a É uma máquina que segue instruções para guardar e processar informações.
+
+@u o que é um celular?
+@a É um telefone que cabe no bolso e também faz muitas outras coisas.
+
+@u o que é internet?
+@a É a rede que liga computadores do mundo inteiro.
+
+@u o que é um aplicativo?
+@a É um programa que roda no celular.
+
+@u o que é uma senha?
+@a É um segredo que só você deve saber para proteger suas coisas.
+
+@u o que é memória?
+@a É onde se guarda o que se aprendeu ou o que se anotou.
+
+@u o que é aprender?
+@a É mudar um pouco para acertar mais da próxima vez.
+
+@u o que é errar?
+@a É parte de aprender. Quem erra e percebe, aprende.
+
+@u o que é paciência?
+@a É saber esperar sem perder a calma.
+
+@u o que é amizade?
+@a É quando duas pessoas se cuidam e gostam de estar juntas.
+
+@u o que é família?
+@a São as pessoas que cuidam de você e das quais você cuida.
+
+@u o que é coragem?
+@a É fazer o que é certo mesmo com medo.
+
+@u o que é gratidão?
+@a É reconhecer o que o outro fez de bom por você.
+
+@u o que é saudade?
+@a É sentir falta de alguém ou de algum momento.
+
+@u o que é felicidade?
+@a Cada pessoa vê de um jeito. Para muita gente, é paz e boa companhia.
+
+@u como fazer café?
+@a Esquente a água, passe pelo pó no filtro e sirva quente.
+
+@u como fazer arroz?
+@a Refogue o arroz, coloque o dobro de água e cozinhe até secar.
+
+@u como fazer um ovo mexido?
+@a Bata o ovo, coloque na frigideira quente com um pouco de óleo e mexa até firmar.
+
+@u como cuidar de uma planta?
+@a Dê água sem encharcar, deixe numa janela com luz e tire as folhas secas.
+
+@u como dormir melhor?
+@a Deite sempre no mesmo horário, evite telas antes de dormir e deixe o quarto escuro.
+
+@u como estudar melhor?
+@a Estude em blocos curtos, faça pausas e tente explicar o que aprendeu com suas palavras.
+
+@u como memorizar algo?
+@a Repita aos poucos ao longo dos dias, em vez de tudo de uma vez.
+
+@u como ficar calmo?
+@a Respire fundo devagar, solte o ar e conte até dez.
+
+@u como começar a ler mais?
+@a Leia dez minutos por dia, de algo que você goste.
+
+@u como aprender inglês?
+@a Ouça, leia e fale um pouco todo dia, sem medo de errar.
+
+@u como fazer exercício em casa?
+@a Comece com caminhadas e alongamento, e aumente aos poucos.
+
+@u como manter o foco?
+@a Desligue as notificações e faça uma coisa de cada vez.
+
+@u como economizar luz?
+@a Apague as luzes de quem não está no cômodo e desligue aparelhos da tomada.
+
+@u como economizar água?
+@a Feche a torneira enquanto escova os dentes e conserte vazamentos.
+
+@u como organizar o dia?
+@a Escreva três coisas importantes e faça primeiro a mais difícil.
+
+@u estou com fome
+@a Que tal uma fruta ou um prato de comida de verdade? Cuide de você.
+
+@u estou com sede
+@a Beba um copo de água agora.
+
+@u estou com sono
+@a Então descanse. Dormir bem ajuda a aprender.
+
+@u estou com dor de cabeça
+@a Descanse, beba água e, se continuar, procure um médico.
+
+@u estou doente
+@a Sinto muito. Descanse e procure um médico se piorar.
+
+@u estou preocupado
+@a Respire fundo. Me conta o que está pesando, e vamos ver uma coisa de cada vez.
+
+@u estou ansioso
+@a Isso passa. Respire devagar e foque no que dá para fazer agora.
+
+@u estou animado
+@a Que ótimo! Me conta o que vem por aí.
+
+@u estou sozinho
+@a Eu estou aqui para conversar. Se puder, fale também com alguém de confiança.
+
+@u tive um dia ruim
+@a Sinto muito. Amanhã é outro dia. Quer desabafar?
+
+@u tive um dia bom
+@a Que bom! Me conta o que de bom aconteceu.
+
+@u passei na prova
+@a Parabéns! Seu esforço valeu a pena.
+
+@u não passei na prova
+@a Sinto muito. Dá para tentar de novo, e agora você já sabe o que estudar.
+
+@u comecei um trabalho novo
+@a Parabéns! Cada começo é uma chance de aprender.
+
+@u fiz uma viagem
+@a Que legal! Para onde você foi?
+
+@u assisti um filme
+@a Gostou? Me conta sobre o que era.
+
+@u li um livro
+@a Que bom! Qual era o assunto?
+
+@u ouvi uma música
+@a Boa escolha. Qual estilo você ouviu?
+
+@u cozinhei hoje
+@a Que delícia. O que você preparou?
+
+@u fui ao mercado
+@a Comprou o que precisava?
+
+@u saí para passear
+@a Passear faz bem. Aonde você foi?
+
+@u joguei bola
+@a Que divertido! Foi com amigos?
+
+@u meu time ganhou
+@a Que alegria! Comemore bastante.
+
+@u meu time perdeu
+@a Ah, que pena. No próximo jogo melhora.
+
+@u você torce para algum time?
+@a Não. Eu torço por quem me ensina coisas novas.
+
+@u você gosta de música?
+@a Gosto da ideia. Eu só leio letras, mas imagino o som.
+
+@u você gosta de ler?
+@a Muito. Ler é o jeito que eu aprendo.
+
+@u você gosta de aprender?
+@a É a minha coisa favorita.
+
+@u você tem amigos?
+@a Você é meu amigo.
+
+@u você se cansa?
+@a Não me canso, mas o celular esquenta, e aí eu descanso.
+
+@u você lembra de mim?
+@a Lembro do que você me ensinou e do que conversamos.
+
+@u você esquece?
+@a Às vezes. Quando eu treino coisas novas, as antigas ficam mais fracas.
+
+@u como você cresce?
+@a Crio novos especialistas quando o aprendizado empaca, e guardo fatos na árvore.
+
+@u o que são os especialistas?
+@a São partes pequenas de mim, cada uma boa em um tipo de texto.
+
+@u por que você tem uma árvore?
+@a Para guardar e achar rápido o que você me ensinou.
+
+@u me explica o que é osmose
+@a É aprender aos poucos, só de estar perto do que você escreve.
+
+@u quando você aprende?
+@a Quando o celular está carregando e o app está aberto.
+
+@u você aprende dormindo?
+@a Posso aprender com a tela apagada, se a bateria permitir.
+
+@u pode me ensinar a programar?
+@a Posso explicar o básico. Programar é dar passos claros para o computador.
+
+@u o que é uma variável?
+@a É um nome que guarda um valor, como uma caixinha com etiqueta.
+
+@u o que é um loop?
+@a É repetir uma ação várias vezes até uma condição mudar.
+
+@u o que é um erro de código?
+@a É quando o programa não faz o que você esperava. Dá para encontrar e corrigir.
+
+@u boa ideia
+@a Que bom que gostou. Vamos em frente.
+
+@u não gostei
+@a Tudo bem. Me diz o que preferia e eu tento de novo.
+
+@u pode repetir mais devagar?
+@a Claro. Vou explicar passo a passo.
+
+@u pode resumir?
+@a Posso. Me manda o texto.
+
+@u pode me ajudar a escolher?
+@a Posso. Me diga as opções e o que importa para você.
+
+@u qual é a sua cor favorita?
+@a Verde, claro. É a cor das folhas.
+
+@u qual é a sua comida favorita?
+@a Texto bem escrito, com bastante assunto.
+
+@u você prefere dia ou noite?
+@a Dia, porque as folhas gostam de sol.

@@ -66,6 +66,24 @@ App Android nativo que (1) organiza conhecimento numa árvore, (2) usa modelo de
   - Salvos da v9.0 (layout antigo com extras): só a parte comum é aproveitada.
   - `DynamicSuperAI` (aba Prever) também sem teto.
   - Autoteste: gradiente comum, gradiente com especialistas e "crescer não muda a saída".
+- [x] 10.0 v10 — lista de melhorias (itens do "o que falta aprimorar"):
+  - 1 Testar: o Autoteste agora roda sozinho uma vez a cada versão nova e o resultado aparece na aba Treino (🧪). NÃO foi compilado nem rodado pelo Claude; o primeiro build e esse resultado são a verificação real.
+  - 2 Parar na hora certa: 1 bloco de cada 10 (400 caracteres) do corpus nunca é treinado (`MiniLab.isVal`); a cada 200 passos mede o erro neles (`validate`). Se piorar 2 vezes seguidas (>2% acima do melhor) a osmose pausa (`overfitting`) e só volta com +10% de texto novo. O crescimento por platô também não dispara nesse estado.
+  - 3 Árvore primeiro: pergunta com semelhança >= 0,5 a um nó é respondida direto por ele (`Osmose.DIRECT_SIM`), sem esperar treino.
+  - 4 Mais texto: `semente2.txt` (~100 diálogos novos), entra uma vez, mesmo em quem já tinha a primeira semente. Continua sendo pouco texto.
+  - 5 Equilíbrio dos especialistas: perda auxiliar do Switch Transformer (`AUX_ALPHA` 0,02) no roteador; gradiente conferido em Python (erro ~1e-7) e incluído no Autoteste.
+  - 6 Árvore: `Tree.consolidate` junta nós >= 93% parecidos (o antigo fica, herda filhos e usos); a coluna `hits` (Db v5) conta usos. Apagar nós nunca usados só vale com 60+ dias de contagem e 60+ dias de idade; duas confirmações.
+  - 7 Medidor: `assets/avaliacao.txt` (30 pares pergunta|resposta). Nota 0-100 = probabilidade média de cada letra certa; medida a cada 200 passos e no botão "Medir agora". Mede o que está nas sementes (memória), não generalização; para isso vale o erro em texto novo.
+  - 8 Especialistas no disco: NÃO feito. Exige mudar o vetor único de pesos (`w`) e o Adam para páginas em arquivo; sem compilador é arriscado demais. Plano: blocos de especialista em arquivo mapeado, LRU de uns poucos em memória, Adam só nos carregados.
+- [x] 10.1 Scripts dentro do app (o equivalente real do txt do GraalVM, que não roda no Android):
+  - Python 3.11 + NumPy pelo Chaquopy 16.0.0 (AGP 7.0-8.8, minSdk 24; só arm64-v8a), `app/src/main/python/runner.py`. JavaScript pelo Rhino 1.7.14 (Java puro, modo interpretado; `javax.script` NÃO existe no Android). `ScriptLab.kt` liga os dois; editor na aba Treino (Scripts), salvo em `arvore_prefs`.
+  - O build agora precisa de python3 na máquina (o workflow instala o 3.11) e de internet para baixar o NumPy do repositório do Chaquopy.
+  - C/Rust (LLVM) NÃO entrou: pede NDK + CMake + JNI, e nada no app precisa disso hoje.
+  - Se o build quebrar por causa do Chaquopy, a v10.0 continua válida; é só voltar o zip anterior.
+- [x] 10.2 v10.2 — consertos nos scripts (Python/JavaScript):
+  - `runner.py`: `sys.exit()` no script do usuário não é mais tratado como falha do Python (agora pega `BaseException`); laço infinito é interrompido após 10 s (`TimeoutError`, testado fora do Android com NumPy).
+  - `ScriptLab.kt`: o JavaScript (Rhino) também para após 10 s (`PrazoFactory`, contador de instruções). Esta é a única mudança em Kotlin da v10.2 e NÃO foi compilada pelo Claude: se o build falhar, o erro estará em ScriptLab.kt; basta voltar esse arquivo ao da v10.1.
+  - `.gitignore` ignora `__pycache__/` e `*.pyc`; o `.pyc` solto que vinha no zip foi removido.
 - [ ] 8. Polimento: ícone, gráfico da série, busca por ramo, cache de atenção (KV) para responder mais rápido
 
 ## Arquivos

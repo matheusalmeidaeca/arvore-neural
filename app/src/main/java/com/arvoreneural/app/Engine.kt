@@ -13,6 +13,7 @@ import com.arvoreneural.app.ai.MiniLab
 import com.arvoreneural.app.ai.Osmose
 import com.arvoreneural.app.ai.Sizes
 import com.arvoreneural.app.ai.Tree
+import com.arvoreneural.app.ai.miniSelfTest
 import com.arvoreneural.app.data.Db
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -58,6 +59,12 @@ object Engine {
     var osmoseMsg by mutableStateOf("")
     var backupMsg by mutableStateOf("")
     var treeMsg by mutableStateOf("")
+    var selfTestMsg by mutableStateOf("")
+    var scriptPy by mutableStateOf(ScriptLab.DEFAULT_PY)
+    var scriptJs by mutableStateOf(ScriptLab.DEFAULT_JS)
+    var scriptIn by mutableStateOf(ScriptLab.DEFAULT_IN)
+    var scriptOut by mutableStateOf("")
+    var scriptBusy by mutableStateOf(false)
     var size by mutableIntStateOf(0)
 
     private val chatLock = Any()
@@ -96,6 +103,24 @@ object Engine {
         osmose = Osmose(appCtx, d, tr, l)
         osmose.start()
         osmose.seedIfNeeded()
+        scriptPy = sp.getString("script_py", ScriptLab.DEFAULT_PY) ?: ScriptLab.DEFAULT_PY
+        scriptJs = sp.getString("script_js", ScriptLab.DEFAULT_JS) ?: ScriptLab.DEFAULT_JS
+        scriptIn = sp.getString("script_in", ScriptLab.DEFAULT_IN) ?: ScriptLab.DEFAULT_IN
+        // autoteste (gradientes, especialistas, crescimento): roda sozinho uma vez a cada versão nova do app
+        val stVer = 10
+        if (sp.getInt("selftest_ver", 0) != stVer) {
+            scope.launch(Dispatchers.Default) {
+                val r = try {
+                    miniSelfTest()
+                } catch (e: Throwable) {
+                    "Autoteste não rodou: " + (e.message ?: e.javaClass.simpleName)
+                }
+                sp.edit().putInt("selftest_ver", stVer).putString("selftest_msg", r).apply()
+                selfTestMsg = r
+            }
+        } else {
+            selfTestMsg = sp.getString("selftest_msg", "") ?: ""
+        }
         ts.status = if (note.isNotEmpty()) note else "Passos treinados: " + l.gpt.step
         ready = true
         scope.launch(Dispatchers.IO) {
@@ -103,6 +128,31 @@ object Engine {
             val n = lab.corpusChars()
             withContext(Dispatchers.Main) { msgs.addAll(0, h.map { Msg(it.first, it.second) }) }
             ts.corpusInfo = "Corpus de treino em massa: " + n + " caracteres"
+        }
+    }
+
+    fun saveScripts() {
+        appCtx.getSharedPreferences("arvore_prefs", Context.MODE_PRIVATE).edit()
+            .putString("script_py", scriptPy).putString("script_js", scriptJs).putString("script_in", scriptIn).apply()
+    }
+
+    /** Roda o Python e depois o JavaScript, fora da tela principal (o primeiro uso demora um pouco). */
+    fun runScripts() {
+        if (scriptBusy) return
+        scriptBusy = true
+        scriptOut = "Rodando… (a primeira vez o Python demora alguns segundos para ligar)"
+        saveScripts()
+        val py = scriptPy
+        val js = scriptJs
+        val ins = ScriptLab.parseInputs(scriptIn)
+        scope.launch(Dispatchers.Default) {
+            val r = try {
+                ScriptLab.run(appCtx, py, js, ins)
+            } catch (e: Throwable) {
+                "❌ Erro: " + (e.message ?: e.javaClass.simpleName)
+            }
+            scriptOut = r
+            scriptBusy = false
         }
     }
 

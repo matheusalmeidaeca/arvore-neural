@@ -1,6 +1,7 @@
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
+    id("com.chaquo.python")
 }
 
 android {
@@ -11,8 +12,10 @@ android {
         applicationId = "com.arvoreneural.app"
         minSdk = 26
         targetSdk = 34
-        versionCode = 9
-        versionName = "9.1"
+        versionCode = 12
+        versionName = "10.2"
+        // Chaquopy exige abiFilters. Só arm64 (celulares atuais): deixa o APK bem menor.
+        ndk { abiFilters += listOf("arm64-v8a") }
     }
     // Chave fixa: o workflow grava arvore.jks na raiz a partir dos Secrets do GitHub.
     // Sem a chave, o build cai na assinatura de depuração (e o APK não atualiza por cima do antigo).
@@ -45,6 +48,15 @@ android {
     composeOptions { kotlinCompilerExtensionVersion = "1.5.14" }
 }
 
+// Python dentro do app (Chaquopy) com NumPy; o interpretador do build precisa ser o python3 da máquina.
+chaquopy {
+    defaultConfig {
+        version = "3.11"
+        buildPython("python3")
+        pip { install("numpy") }
+    }
+}
+
 dependencies {
     implementation(platform("androidx.compose:compose-bom:2024.06.00"))
     implementation("androidx.core:core-ktx:1.13.1")
@@ -52,4 +64,5 @@ dependencies {
     implementation("androidx.compose.ui:ui")
     implementation("androidx.compose.material3:material3")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
+    implementation("org.mozilla:rhino:1.7.14")
 }

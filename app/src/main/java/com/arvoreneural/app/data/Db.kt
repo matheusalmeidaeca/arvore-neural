@@ -12,12 +12,13 @@ class Node(
     val title: String,
     val content: String,
     val embedding: FloatArray,
-    val createdAt: Long
+    val createdAt: Long,
+    val hits: Int = 0
 )
 
 class Point(val id: Long, val series: String, val value: Double, val ts: Long)
 
-class Db(ctx: Context) : SQLiteOpenHelper(ctx, "arvore.db", null, 4) {
+class Db(ctx: Context) : SQLiteOpenHelper(ctx, "arvore.db", null, 5) {
 
     override fun onCreate(d: SQLiteDatabase) {
         createChat(d)
@@ -25,7 +26,8 @@ class Db(ctx: Context) : SQLiteOpenHelper(ctx, "arvore.db", null, 4) {
         createCorpus(d)
         d.execSQL(
             "CREATE TABLE nodes(id INTEGER PRIMARY KEY AUTOINCREMENT, parent_id INTEGER NOT NULL, " +
-                "title TEXT NOT NULL, content TEXT NOT NULL, embedding BLOB NOT NULL, created_at INTEGER NOT NULL)"
+                "title TEXT NOT NULL, content TEXT NOT NULL, embedding BLOB NOT NULL, created_at INTEGER NOT NULL, " +
+                "hits INTEGER NOT NULL DEFAULT 0)"
         )
         d.execSQL(
             "CREATE TABLE points(id INTEGER PRIMARY KEY AUTOINCREMENT, series TEXT NOT NULL, " +
@@ -52,6 +54,7 @@ class Db(ctx: Context) : SQLiteOpenHelper(ctx, "arvore.db", null, 4) {
         if (oldV < 2) createChat(d)
         if (oldV < 3) createModel(d)
         if (oldV < 4) createCorpus(d)
+        if (oldV < 5) d.execSQL("ALTER TABLE nodes ADD COLUMN hits INTEGER NOT NULL DEFAULT 0")
     }
 
     private fun toBlob(a: FloatArray): ByteArray {
@@ -112,19 +115,31 @@ class Db(ctx: Context) : SQLiteOpenHelper(ctx, "arvore.db", null, 4) {
     fun allNodes(): List<Node> {
         val out = ArrayList<Node>()
         val c = readableDatabase.rawQuery(
-            "SELECT id,parent_id,title,content,embedding,created_at FROM nodes ORDER BY id", null
+            "SELECT id,parent_id,title,content,embedding,created_at,hits FROM nodes ORDER BY id", null
         )
         c.use {
             while (it.moveToNext()) {
                 out.add(
                     Node(
                         it.getLong(0), it.getLong(1), it.getString(2),
-                        it.getString(3), fromBlob(it.getBlob(4)), it.getLong(5)
+                        it.getString(3), fromBlob(it.getBlob(4)), it.getLong(5), it.getInt(6)
                     )
                 )
             }
         }
         return out
+    }
+
+    /** Conta que este nó foi usado para responder. */
+    @Synchronized
+    fun bumpHit(id: Long, by: Int = 1) {
+        writableDatabase.execSQL("UPDATE nodes SET hits = hits + ? WHERE id=?", arrayOf<Any>(by, id))
+    }
+
+    /** Passa os filhos de `from` para `to` (usado ao juntar nós parecidos). */
+    @Synchronized
+    fun reparentChildren(from: Long, to: Long) {
+        writableDatabase.execSQL("UPDATE nodes SET parent_id=? WHERE parent_id=?", arrayOf<Any>(to, from))
     }
 
     @Synchronized

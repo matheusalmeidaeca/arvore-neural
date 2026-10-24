@@ -143,6 +143,70 @@ class Tree(private val db: Db, private val emb: Embedder) {
         return nodes
     }
 
+    /**
+     * Arruma a árvore: junta nós quase iguais (parecidos >= 93%, o mais antigo fica e herda filhos e usos).
+     * Com prune, apaga também os nós criados há mais de 60 dias que nunca foram usados para responder,
+     * mas só se a contagem de usos já existe há mais de 60 dias (`trackedSince`); senão nada é apagado.
+     * Só olha os 2000 primeiros nós (comparação par a par).
+     */
+    fun consolidate(prune: Boolean, trackedSince: Long): String {
+        val all = db.allNodes()
+        if (all.size < 2) return "Poucos nós para arrumar."
+        val list = if (all.size > 2000) all.subList(0, 2000) else all
+        val byId = HashMap<Long, Node>()
+        for (n in all) byId[n.id] = n
+        fun related(a: Node, b: Node): Boolean {
+            for ((x, y) in listOf(a to b, b to a)) {
+                var cur: Node? = byId[x.parentId]
+                var guard = 0
+                while (cur != null && guard < 100) {
+                    if (cur.id == y.id) return true
+                    cur = byId[cur.parentId]
+                    guard++
+                }
+            }
+            return false
+        }
+        val gone = HashSet<Long>()
+        var merged = 0
+        db.batch {
+            for (i in list.indices) {
+                val a = list[i]
+                if (a.id in gone) continue
+                var hits = 0
+                for (j in i + 1 until list.size) {
+                    val b = list[j]
+                    if (b.id in gone) continue
+                    if (cosine(a.embedding, b.embedding) < 0.93f) continue
+                    if (related(a, b)) continue
+                    db.reparentChildren(b.id, a.id)
+                    hits += b.hits
+                    db.deleteNode(b.id)
+                    gone.add(b.id)
+                    merged++
+                }
+                if (hits > 0) db.bumpHit(a.id, hits)
+            }
+        }
+        var pruned = 0
+        val now = System.currentTimeMillis()
+        val day60 = 60L * 24 * 3600 * 1000
+        val canPrune = prune && trackedSince > 0 && now - trackedSince > day60
+        if (canPrune) {
+            for (n in db.allNodes()) {
+                if (n.hits == 0 && now - n.createdAt > day60) {
+                    db.deleteNode(n.id)
+                    pruned++
+                }
+            }
+        }
+        val extra = when {
+            prune && !canPrune -> " Nada foi apagado por falta de uso: a contagem de usos ainda não tem 60 dias."
+            else -> ""
+        }
+        return "Árvore arrumada: " + merged + " nós parecidos juntados, " + pruned + " nós sem uso apagados." + extra
+    }
+
     fun ask(q: String, k: Int = 3): List<Pair<Node, Float>> {
         val e = emb.embed(q)
         return db.allNodes()

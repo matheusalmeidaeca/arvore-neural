@@ -415,6 +415,7 @@ fun TrainScreen(onChange: () -> Unit) {
     var confirmClear by remember { mutableStateOf(false) }
     var confirmReset by remember { mutableStateOf(false) }
     var confirmCorpus by remember { mutableStateOf(false) }
+    var confirmPrune by remember { mutableStateOf(false) }
     val view = LocalView.current
     val training = ts.training
     DisposableEffect(training) {
@@ -431,6 +432,24 @@ fun TrainScreen(onChange: () -> Unit) {
             style = MaterialTheme.typography.bodyMedium
         )
         OsmoseCard(Engine.osmose, onChange)
+
+        var health by remember { mutableStateOf("") }
+        LaunchedEffect(Unit) {
+            while (true) {
+                health = lab.healthInfo()
+                delay(2000)
+            }
+        }
+        Text("📊 Saúde do modelo", style = MaterialTheme.typography.titleMedium)
+        Text(health, style = MaterialTheme.typography.bodySmall)
+        if (Engine.selfTestMsg.isNotEmpty()) Text("🧪 " + Engine.selfTestMsg, style = MaterialTheme.typography.bodySmall)
+        Button(enabled = !ts.busy, onClick = {
+            Engine.scope.launch(Dispatchers.Default) {
+                lab.measureNow()
+                health = lab.healthInfo()
+            }
+        }) { Text("📏 Medir agora") }
+
         OutlinedTextField(
             value = Engine.learnText,
             onValueChange = { Engine.learnText = it },
@@ -463,8 +482,70 @@ fun TrainScreen(onChange: () -> Unit) {
             Engine.scope.launch(Dispatchers.Default) { ts.status = lab.growNow() }
         }) { Text("🌱 Crescer agora (dobra os especialistas)") }
 
+        Text("🌳 Cuidar da árvore", style = MaterialTheme.typography.titleMedium)
+        Button(onClick = {
+            Engine.scope.launch(Dispatchers.IO) {
+                ts.status = try {
+                    Engine.tree.consolidate(false, 0L)
+                } catch (e: Throwable) {
+                    "Erro ao arrumar a árvore."
+                }
+                onChange()
+            }
+        }) { Text("🧹 Juntar nós parecidos") }
+        TextButton(onClick = {
+            if (!confirmPrune) {
+                confirmPrune = true
+            } else {
+                confirmPrune = false
+                Engine.scope.launch(Dispatchers.IO) {
+                    ts.status = try {
+                        Engine.tree.consolidate(true, Engine.osmose.hitsSince())
+                    } catch (e: Throwable) {
+                        "Erro ao arrumar a árvore."
+                    }
+                    onChange()
+                }
+            }
+        }) { Text(if (confirmPrune) "Toque de novo para confirmar" else "Apagar nós nunca usados (60+ dias)") }
+
         SizeCard()
         BackupCard()
+
+        Text("🐍 Scripts: Python + JavaScript", style = MaterialTheme.typography.titleMedium)
+        Text(
+            "O Kotlin entrega os números ao Python (NumPy); o Python diz se o neurônio disparou (variável disparou); " +
+                "o JavaScript recebe resultadoIA e devolve a mensagem. Edite, toque em Rodar e vale na hora.",
+            style = MaterialTheme.typography.bodySmall
+        )
+        OutlinedTextField(
+            value = Engine.scriptIn,
+            onValueChange = { Engine.scriptIn = it },
+            label = { Text("Entradas (números separados por vírgula)") },
+            modifier = Modifier.fillMaxWidth()
+        )
+        OutlinedTextField(
+            value = Engine.scriptPy,
+            onValueChange = { Engine.scriptPy = it },
+            label = { Text("Python (NumPy)") },
+            modifier = Modifier.fillMaxWidth().heightIn(min = 140.dp)
+        )
+        OutlinedTextField(
+            value = Engine.scriptJs,
+            onValueChange = { Engine.scriptJs = it },
+            label = { Text("JavaScript") },
+            modifier = Modifier.fillMaxWidth().heightIn(min = 120.dp)
+        )
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Button(enabled = !Engine.scriptBusy, onClick = { Engine.runScripts() }) { Text("▶ Rodar") }
+            TextButton(enabled = !Engine.scriptBusy, onClick = {
+                Engine.scriptPy = ScriptLab.DEFAULT_PY
+                Engine.scriptJs = ScriptLab.DEFAULT_JS
+                Engine.scriptIn = ScriptLab.DEFAULT_IN
+                Engine.saveScripts()
+            }) { Text("Restaurar exemplo") }
+        }
+        if (Engine.scriptOut.isNotEmpty()) Text(Engine.scriptOut, style = MaterialTheme.typography.bodySmall)
 
         Text("🧪 Avançado", style = MaterialTheme.typography.titleMedium)
         OutlinedTextField(

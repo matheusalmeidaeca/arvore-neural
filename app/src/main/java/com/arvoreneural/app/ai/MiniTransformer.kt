@@ -248,6 +248,9 @@ private fun lnBwd(
 }
 
 /** Memória de trabalho de uma sequência (uma por thread). */
+/** Peso da perda de equilíbrio entre especialistas (Switch Transformer): empurra o roteador a repartir o trabalho. */
+private const val AUX_ALPHA = 0.02f
+
 class Work(cfg: MiniGptConfig, private val lay: Layout, private val active: IntArray) {
     private val T = cfg.t
     private val C = cfg.c
@@ -295,6 +298,10 @@ class Work(cfg: MiniGptConfig, private val lay: Layout, private val active: IntA
     private val fo = Array(L) { FloatArray(if (EX > 1) T * C else 0) }
     /** quantas vezes cada especialista foi escolhido (para copiar o mais usado ao crescer) */
     val use = IntArray(L * EX)
+    private val cntTmp = IntArray(EX)
+    private val psTmp = FloatArray(EX)
+    private val fTmp = FloatArray(EX)
+    private var auxSum = 0f
 
     /** Feed-forward com k especialistas: o roteador escolhe UM por posição; saída = k * prob * especialista(x). */
     private fun moeFwd(w: FloatArray, l: Int, nn: Int, k: Int) {
@@ -303,6 +310,10 @@ class Work(cfg: MiniGptConfig, private val lay: Layout, private val active: IntA
         val gg = gl[l]
         val o = fo[l]
         val pr = rp[l]
+        for (e in 0 until k) {
+            cntTmp[e] = 0
+            psTmp[e] = 0f
+        }
         for (t in 0 until nn) {
             val xo = t * C
             var mx = -1e30f
@@ -330,6 +341,8 @@ class Work(cfg: MiniGptConfig, private val lay: Layout, private val active: IntA
             }
             sel[l][t] = best
             use[l * EX + best]++
+            cntTmp[best]++
+            for (j in 0 until k) psTmp[j] += pr[t * EX + j]
             val gt = k * bp
             gate[l][t] = gt
             val o1 = lay.fw1(l, best)
@@ -351,16 +364,23 @@ class Work(cfg: MiniGptConfig, private val lay: Layout, private val active: IntA
                 tmp[xo + oo] = sc * gt
             }
         }
+        // perda de equilíbrio: nn * alfa * k * soma(fração de posições do especialista * prob. média dele)
+        var sumFP = 0f
+        for (e in 0 until k) sumFP += (cntTmp[e].toFloat() / nn) * (psTmp[e] / nn)
+        auxSum += nn * AUX_ALPHA * k * sumFP
     }
 
     /** Gradiente do feed-forward com especialistas. Usa dh; deixa dbn pronto (dbn é zerado aqui). */
-    private fun moeBwd(w: FloatArray, l: Int, nn: Int, k: Int) {
+    private fun moeBwd(w: FloatArray, l: Int, nn: Int, k: Int, scale: Float) {
         val x = bn[l]
         val f = f1[l]
         val gg = gl[l]
         val o = fo[l]
         val pr = rp[l]
         Arrays.fill(dbn, 0f)
+        for (e in 0 until k) fTmp[e] = 0f
+        for (t in 0 until nn) fTmp[sel[l][t]] += 1f
+        for (e in 0 until k) fTmp[e] /= nn
         for (t in 0 until nn) {
             val xo = t * C
             val e = sel[l][t]
@@ -393,8 +413,11 @@ class Work(cfg: MiniGptConfig, private val lay: Layout, private val active: IntA
             }
             val dp = k * dgate
             val ps = pr[t * EX + e]
+            var sS = 0f
+            for (j in 0 until k) sS += fTmp[j] * pr[t * EX + j]
             for (j in 0 until k) {
-                val dl = dp * ps * ((if (j == e) 1f else 0f) - pr[t * EX + j])
+                val pj = pr[t * EX + j]
+                val dl = dp * ps * ((if (j == e) 1f else 0f) - pj) + scale * AUX_ALPHA * k * (fTmp[j] * pj - pj * sS)
                 val ro = lay.rr[l][j]
                 for (i in 0 until C) {
                     g[ro + i] += dl * x[xo + i]
@@ -406,6 +429,7 @@ class Work(cfg: MiniGptConfig, private val lay: Layout, private val active: IntA
 
     /** slots = caminho do nó na árvore: a soma dos vetores de galho condiciona todas as posições. */
     fun forward(w: FloatArray, x: IntArray, nn: Int, slots: IntArray) {
+        auxSum = 0f
         Arrays.fill(ns, 0f)
         for (sl in slots) {
             val so = lay.node + sl * C
@@ -476,7 +500,7 @@ class Work(cfg: MiniGptConfig, private val lay: Layout, private val active: IntA
     }
 
     /** Soma da entropia cruzada dos nn tokens (sem dividir). */
-    fun lossOf(w: FloatArray, x: IntArray, y: IntArray, nn: Int, slots: IntArray): Float {
+    fun lossOf(w: FloatArray, x: IntArray, y: IntArray, nn: Int, slots: IntArray, withAux: Boolean = false): Float {
         forward(w, x, nn, slots)
         var tot = 0f
         for (t in 0 until nn) {
@@ -487,7 +511,7 @@ class Work(cfg: MiniGptConfig, private val lay: Layout, private val active: IntA
             for (j in 0 until V) s += exp(logits[r + j] - mx)
             tot += -(logits[r + y[t]] - mx - ln(s))
         }
-        return tot
+        return if (withAux) tot + auxSum else tot
     }
 
     /** Forward + backward. Acumula o gradiente (multiplicado por scale) em g. Devolve a soma da perda. */
@@ -526,7 +550,7 @@ class Work(cfg: MiniGptConfig, private val lay: Layout, private val active: IntA
                 Arrays.fill(dbn, 0f)
                 linBwd(bn[l], dgl, nn, C, w, lay.w1[l], lay.b1[l], 4 * C, g, dbn)
             } else {
-                moeBwd(w, l, nn, kx)
+                moeBwd(w, l, nn, kx, scale)
             }
             System.arraycopy(dh, 0, dh1, 0, dh.size)
             lnBwd(dbn, nn, C, w, lay.ln2g[l], lay.ln2b[l], ln2x[l], ln2rs[l], g, dh1)
@@ -989,7 +1013,143 @@ class MiniLab(private val db: Db, val size: Int = 0) {
         val before = refLoss
         refLoss = emaLoss
         val plateau = !before.isNaN() && emaLoss > before * 0.98f
-        if (plateau && emaLoss > 0.6f) growNow()
+        if (plateau && emaLoss > 0.6f && !overfit) growNow()
+    }
+
+    // ------------------------------------------------------------------ erro em texto novo (validação)
+
+    private val valBlock = 400
+
+    /** Um bloco de cada 10 do corpus (posições fixas) nunca é treinado: serve para medir se o modelo só decorou. */
+    private fun isVal(pos: Int): Boolean = (pos / valBlock) % 10 == 9
+
+    /** Erro médio por caractere em texto que o modelo não treina (NaN = corpus ainda pequeno demais). */
+    @Volatile var valLoss = Float.NaN
+    @Volatile var bestVal = Float.NaN
+    @Volatile var overfit = false
+    @Volatile var quality = Float.NaN
+    private var badEvals = 0
+    private var overfitCorp = 0
+    private val qualityLog = ArrayList<String>()
+
+    /** Pares (pergunta, resposta) fixos para medir a qualidade; carregados de assets/avaliacao.txt. */
+    @Volatile var evalPairs: List<Pair<String, String>> = emptyList()
+
+    fun validate(): Float {
+        val corp = corpusTokens()
+        val t = gpt.cfg.t
+        if (corp.size < 9 * valBlock + valBlock) return Float.NaN
+        val none = IntArray(0)
+        var tot = 0f
+        var n = 0
+        synchronized(lock) {
+            var vb = 9 * valBlock
+            while (vb + valBlock <= corp.size && n < 40) {
+                var off = 0
+                while (off + t + 1 <= valBlock && n < 40) {
+                    val st = vb + off
+                    val x = corp.copyOfRange(st, st + t)
+                    val y = corp.copyOfRange(st + 1, st + t + 1)
+                    tot += gpt.lossOf(x, y, none)
+                    n++
+                    off += t
+                }
+                vb += 10 * valBlock
+            }
+        }
+        return if (n == 0) Float.NaN else tot / (n * t)
+    }
+
+    /** Nota de 0 a 100: probabilidade média (geométrica) que o modelo dá a cada letra das respostas certas. */
+    fun measureQuality(): Float {
+        val pairs = evalPairs
+        if (pairs.isEmpty()) return Float.NaN
+        val t = gpt.cfg.t
+        val sys = sysLine()
+        val none = IntArray(0)
+        var lossSum = 0f
+        var chars = 0
+        synchronized(lock) {
+            for ((q, a) in pairs) {
+                val pre = Vocab.encode(sys + "@u " + q + "\n@a ")
+                val ans = Vocab.encode(a + "\n")
+                if (pre.isEmpty() || ans.isEmpty()) continue
+                val ids = IntArray(1 + pre.size + ans.size)
+                System.arraycopy(pre, 0, ids, 1, pre.size)
+                System.arraycopy(ans, 0, ids, 1 + pre.size, ans.size)
+                if (ids.size - 1 > t) continue
+                val full = gpt.lossOf(ids.copyOfRange(0, ids.size - 1), ids.copyOfRange(1, ids.size), none)
+                val pl = 1 + pre.size
+                val pref = gpt.lossOf(ids.copyOfRange(0, pl - 1), ids.copyOfRange(1, pl), none)
+                lossSum += full - pref
+                chars += ans.size
+            }
+        }
+        if (chars == 0) return Float.NaN
+        val nota = 100f * exp(-lossSum / chars)
+        quality = nota
+        synchronized(qualityLog) {
+            qualityLog.add(gpt.step.toString() + ": " + "%.0f".format(nota))
+            if (qualityLog.size > 6) qualityLog.removeAt(0)
+        }
+        return nota
+    }
+
+    /** Mede agora (botão da aba Treino): erro em texto novo e qualidade nas perguntas fixas. */
+    fun measureNow() {
+        val v = validate()
+        if (!v.isNaN()) {
+            valLoss = v
+            if (bestVal.isNaN() || v < bestVal) bestVal = v
+        }
+        measureQuality()
+    }
+
+    /** A cada 200 passos: mede o erro em texto novo; se piorar 2 vezes seguidas, a osmose para (está decorando). */
+    private fun checkProgress() {
+        val v = validate()
+        if (!v.isNaN()) {
+            valLoss = v
+            if (bestVal.isNaN() || v < bestVal) {
+                bestVal = v
+                badEvals = 0
+            } else if (v > bestVal * 1.02f) {
+                badEvals++
+                if (badEvals >= 2 && !overfit) {
+                    overfit = true
+                    overfitCorp = db.corpusChars()
+                }
+            } else {
+                badEvals = 0
+            }
+        }
+        measureQuality()
+    }
+
+    /** true = a osmose deve esperar. Volta sozinho quando chega texto novo (+10% no corpus). */
+    fun overfitting(): Boolean {
+        if (!overfit) return false
+        if (db.corpusChars() > overfitCorp * 1.1f + 500f) {
+            overfit = false
+            badEvals = 0
+            bestVal = Float.NaN
+        }
+        return overfit
+    }
+
+    fun healthInfo(): String {
+        val sb = StringBuilder()
+        sb.append("Erro em texto novo: ")
+        if (valLoss.isNaN()) sb.append("— (precisa de mais texto)") else {
+            sb.append("%.2f".format(valLoss))
+            if (!bestVal.isNaN()) sb.append(" (melhor ").append("%.2f".format(bestVal)).append(")")
+        }
+        sb.append("\nQualidade nas perguntas fixas: ")
+        if (quality.isNaN()) sb.append("—") else sb.append("%.0f".format(quality)).append("/100")
+        val log = synchronized(qualityLog) { ArrayList(qualityLog) }
+        if (log.size > 1) sb.append("  [").append(log.joinToString(" | ")).append("]")
+        if (overfit) sb.append("\n⚠️ Está decorando: o erro em texto novo subiu. Treino automático em pausa até chegar mais texto.")
+        return sb.toString()
     }
 
     /** Faz nascer especialistas agora (dobra). Devolve uma mensagem para mostrar. */
@@ -1135,14 +1295,27 @@ class MiniLab(private val db: Db, val size: Int = 0) {
         val out = ArrayList<Seq>()
         for (b in 0 until batch) {
             if ((focus == null || b % 2 == 1) && hasCorp && (docs.isEmpty() || rnd.nextBoolean())) {
-                var start = rnd.nextInt(corp.size - t - 1)
-                // alinha ao começo de uma linha (id 0 = nova linha), para o diálogo começar em "@u" ou "@a"
-                var k = start
-                val lim = minOf(start + 120, corp.size - t - 2)
-                while (k < lim && corp[k] != 0) k++
-                if (k < lim) start = k + 1
-                out.add(Seq(IntArray(0), corp.copyOfRange(start, start + t), corp.copyOfRange(start + 1, start + t + 1)))
-                continue
+                var start = -1
+                var last = 0
+                for (tries in 0 until 8) {
+                    var s0 = rnd.nextInt(corp.size - t - 1)
+                    // alinha ao começo de uma linha (id 0 = nova linha), para o diálogo começar em "@u" ou "@a"
+                    var k = s0
+                    val lim = minOf(s0 + 120, corp.size - t - 2)
+                    while (k < lim && corp[k] != 0) k++
+                    if (k < lim) s0 = k + 1
+                    last = s0
+                    // blocos de validação não entram no treino
+                    if (!isVal(s0) && !isVal(s0 + t + 1)) {
+                        start = s0
+                        break
+                    }
+                }
+                if (start < 0 && docs.isEmpty()) start = last
+                if (start >= 0) {
+                    out.add(Seq(IntArray(0), corp.copyOfRange(start, start + t), corp.copyOfRange(start + 1, start + t + 1)))
+                    continue
+                }
             }
             val d = if (focus != null && b % 2 == 0) focus else docs[rnd.nextInt(docs.size)]
             val len = d.ids.size
@@ -1168,6 +1341,12 @@ class MiniLab(private val db: Db, val size: Int = 0) {
             i++
             onStep(i, loss)
             maybeGrow(loss)
+            if (gpt.step % 200 == 0) {
+                try {
+                    checkProgress()
+                } catch (e: Exception) {
+                }
+            }
             if (i % 100 == 0 && !frozen) synchronized(lock) { gpt.save(db) }
         }
         if (saveAtEnd && !frozen) synchronized(lock) { gpt.save(db) }
@@ -1202,6 +1381,12 @@ class MiniLab(private val db: Db, val size: Int = 0) {
             gpt.reset()
             db.clearModel()
         }
+        valLoss = Float.NaN
+        bestVal = Float.NaN
+        overfit = false
+        badEvals = 0
+        quality = Float.NaN
+        synchronized(qualityLog) { qualityLog.clear() }
     }
 }
 
@@ -1229,9 +1414,9 @@ private fun gradCheck(cfg: MiniGptConfig, active: IntArray, seed: Long): Float {
             val old = w[i]
             val eps = 1e-2f
             w[i] = old + eps
-            val lp = wk.lossOf(w, x, y, len, slots)
+            val lp = wk.lossOf(w, x, y, len, slots, true)
             w[i] = old - eps
-            val lm = wk.lossOf(w, x, y, len, slots)
+            val lm = wk.lossOf(w, x, y, len, slots, true)
             w[i] = old
             val num = (lp - lm) / (2f * eps)
             val err = abs(num - ana[i]) / max(0.05f, abs(num) + abs(ana[i]))

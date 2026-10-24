@@ -11,6 +11,8 @@ import java.util.concurrent.atomic.AtomicInteger
 
 private const val TU = "@u "
 private const val TA = "@a "
+/** A partir desta semelhança, uma pergunta é respondida direto pela árvore. */
+private const val DIRECT_SIM = 0.5f
 private const val DEFAULT_SYS = "Você é a Árvore: uma IA pequena, curiosa e gentil."
 
 /**
@@ -114,6 +116,15 @@ class Osmose(
     fun start() {
         if (started.getAndSet(true)) return
         lab.sysPrompt = systemPrompt
+        try {
+            lab.evalPairs = ctx.assets.open("avaliacao.txt").bufferedReader().use { r ->
+                r.readLines().mapNotNull { ln ->
+                    val k = ln.indexOf('|')
+                    if (k <= 0) null else ln.substring(0, k).trim() to ln.substring(k + 1).trim()
+                }
+            }
+        } catch (e: Throwable) {
+        }
         val th = Thread { loop() }
         th.isDaemon = true
         th.start()
@@ -154,6 +165,8 @@ class Osmose(
                     // canTrain já preencheu o motivo
                 } else if (db.corpusChars() < 200 && db.nodeCount() == 0) {
                     why = "nada para aprender ainda (converse, ensine ou importe uma conversa)"
+                } else if (lab.overfitting()) {
+                    why = "parou para não decorar (o erro em texto novo subiu). Traga mais texto."
                 } else {
                     why = ""
                     loopWants = true
@@ -214,7 +227,7 @@ class Osmose(
             else -> "🌊 Osmose ligada"
         }
         return st + "\npassos " + g.step + " | perda " + loss + " | corpus " + db.corpusChars() +
-            " caracteres | nós " + db.nodeCount()
+            " caracteres | nós " + db.nodeCount() + "\n" + lab.healthInfo()
     }
 
     // ------------------------------------------------------------------ semente
@@ -224,21 +237,37 @@ class Osmose(
      * pequenos diálogos @u/@a em português) para já ter o que treinar. Só acontece uma vez.
      */
     fun seedIfNeeded() {
-        if (prefs.getBoolean("seeded", false)) return
         Thread {
             try {
-                if (db.corpusChars() < 200) {
-                    val lines = ctx.assets.open("semente.txt").bufferedReader().use { it.readLines() }
+                if (!prefs.getBoolean("seeded", false)) {
+                    if (db.corpusChars() < 200) {
+                        val lines = ctx.assets.open("semente.txt").bufferedReader().use { it.readLines() }
+                        lab.addCorpus(lines)
+                        tree.addRepresentatives(
+                            lines.filter { it.startsWith(TA) && it.length > 40 }.map { it.removePrefix(TA) }, 6
+                        )
+                    }
+                    prefs.edit().putBoolean("seeded", true).apply()
+                }
+                // segunda semente (v10): mais assunto para a osmose; entra uma vez só, mesmo em quem já tinha a primeira
+                if (!prefs.getBoolean("seeded2", false)) {
+                    val lines = ctx.assets.open("semente2.txt").bufferedReader().use { it.readLines() }
                     lab.addCorpus(lines)
                     tree.addRepresentatives(
                         lines.filter { it.startsWith(TA) && it.length > 40 }.map { it.removePrefix(TA) }, 6
                     )
+                    prefs.edit().putBoolean("seeded2", true).apply()
                 }
-                prefs.edit().putBoolean("seeded", true).apply()
+                if (prefs.getLong("hits_since", 0L) == 0L) {
+                    prefs.edit().putLong("hits_since", System.currentTimeMillis()).apply()
+                }
             } catch (e: Throwable) {
             }
         }.start()
     }
+
+    /** Desde quando a árvore conta quantas vezes cada nó foi usado (para saber o que nunca é usado). */
+    fun hitsSince(): Long = prefs.getLong("hits_since", 0L)
 
     // ------------------------------------------------------------------ absorver textos
 
@@ -341,16 +370,27 @@ class Osmose(
             if (newId > 0) lab.learnInBackground(newId)
         }
 
+        // aprendizado instantâneo: pergunta parecida com algo que a árvore já guarda é respondida com isso, sem esperar treino
+        val direct = question && best != null && best.second >= DIRECT_SIM
+        if (best != null && best.second >= Tree.MIN_SIM) {
+            try {
+                db.bumpHit(best.first.id)
+            } catch (e: Throwable) {
+            }
+        }
+
         val g = lab.gpt
         val mature = g.step >= 300 && g.lastLoss.isFinite() && g.lastLoss < 1.9f
         var reply = ""
-        if (mature) {
+        if (mature && !direct) {
             val nodeId = if (best != null && best.second >= Tree.MIN_SIM) best.first.id else -1L
             reply = cleanReply(lab.generateChat(nodeId, buildPrompt(h, t)))
         }
 
         val sb = StringBuilder()
-        if (reply.isNotEmpty()) {
+        if (direct && best != null) {
+            sb.append("Lembro disto: ").append(tree.tidy(best.first.content, 300))
+        } else if (reply.isNotEmpty()) {
             sb.append(reply)
         } else if (question && best != null) {
             sb.append("Lembro disto: ").append(tree.tidy(best.first.content, 300))
@@ -359,7 +399,7 @@ class Osmose(
         } else {
             sb.append("Hum… ainda não sei responder isso.")
         }
-        if (!mature) {
+        if (!mature && !direct) {
             sb.append("\n(Ainda estou aprendendo a conversar: ").append(g.step)
                 .append(" passos. Deixe a osmose ligada ou importe conversas.)")
         }
