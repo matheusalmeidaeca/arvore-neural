@@ -35,7 +35,7 @@ object Forecaster {
             xs.add(FloatArray(w) { (values[i + it] / sc).toFloat() })
             ts.add(floatArrayOf((values[i + w] / sc).toFloat()))
         }
-        val ai = DynamicSuperAI(w, 1, 16, 0.002f, 300, 0.05f, 5L)
+        val ai = DynamicSuperAI(w, 1, Int.MAX_VALUE, 0.002f, 300, 0.05f, 5L)
         val order = xs.indices.toMutableList()
         val rnd = java.util.Random(5)
         repeat(60) {

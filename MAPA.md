@@ -59,6 +59,13 @@ App Android nativo que (1) organiza conhecimento numa árvore, (2) usa modelo de
   - Com k >= 2 ativos: o roteador escolhe UM especialista por posição (top-1); saída = k * prob * especialista(x), assim com probabilidades iguais o gate vale 1. Gradiente do roteador escrito à mão (`Work.moeFwd/moeBwd`); conferido contra gradiente numérico em Python (erro ~1e-7). O botão Autoteste agora testa também o modelo com especialistas.
   - Crescer: `MiniGpt.grow` ativa +1 especialista em todas as camadas, copiando (com ruído de 2%) o mais usado e a linha do roteador dele. Automático em `MiniLab.maybeGrow`: a cada 1500 passos, se a perda (média móvel) melhorou menos de 2% e está acima de 0,8. Também pelo botão "Crescer agora" na aba Treino. Metadado do modelo guarda quantos especialistas estão ativos.
   - Sem perda de balanceamento: um especialista pode acabar dominando.
+- [x] 9.1 Especialistas sem teto fixo e crescimento exponencial:
+  - O modelo nasce com 1 especialista por camada (igual à v8, mesmo uso de memória). `MiniGpt.grow` DOBRA (1, 2, 4, 8...); se a memória não der, tenta metade, e assim por diante. Cada bloco novo vai no FIM do vetor de pesos (`Layout(cfg, ex)`), então nada do que já existe muda de lugar; o arquivo salvo diz quantos especialistas tem pelo tamanho (`capacityFor`), meta versão 2.
+  - Gatilho (`MiniLab.maybeGrow`): a cada 300 passos, platô (< 2% de melhora) com perda > 0,6. Botão "Crescer agora" dobra na hora.
+  - O único limite é a memória do app: antes de crescer `fits()` confere o pior momento da troca; se não couber, o app avisa quanto custa e quanto sobra. Custo no Mini: ~15 MB por especialista novo em cada camada.
+  - Salvos da v9.0 (layout antigo com extras): só a parte comum é aproveitada.
+  - `DynamicSuperAI` (aba Prever) também sem teto.
+  - Autoteste: gradiente comum, gradiente com especialistas e "crescer não muda a saída".
 - [ ] 8. Polimento: ícone, gráfico da série, busca por ramo, cache de atenção (KV) para responder mais rápido
 
 ## Arquivos

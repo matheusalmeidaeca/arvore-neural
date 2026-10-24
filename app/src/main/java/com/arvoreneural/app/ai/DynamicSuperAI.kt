@@ -87,7 +87,7 @@ class Router(val inputSize: Int, startExperts: Int = 2, private val rnd: Random 
 class DynamicSuperAI(
     val inputSize: Int,
     val outputSize: Int,
-    private val maxExperts: Int = 16,
+    private val maxExperts: Int = Int.MAX_VALUE,
     private val errorThreshold: Float = 0.05f,   // tolerância (média móvel da perda)
     private val cooldown: Int = 300,             // passos mínimos entre dois nascimentos
     private val lr: Float = 0.1f,
