@@ -80,6 +80,11 @@ App Android nativo que (1) organiza conhecimento numa árvore, (2) usa modelo de
   - O build agora precisa de python3 na máquina (o workflow instala o 3.11) e de internet para baixar o NumPy do repositório do Chaquopy.
   - C/Rust (LLVM) NÃO entrou: pede NDK + CMake + JNI, e nada no app precisa disso hoje.
   - Se o build quebrar por causa do Chaquopy, a v10.0 continua válida; é só voltar o zip anterior.
+- [x] 10.2 v10.2 — consertos nos scripts (Python/JavaScript):
+  - `runner.py`: `sys.exit()` no script do usuário não é mais tratado como falha do Python (agora pega `BaseException`); laço infinito é interrompido após 10 s (`TimeoutError`, testado fora do Android com NumPy).
+  - `ScriptLab.kt`: o JavaScript (Rhino) também para após 10 s (`PrazoFactory`, contador de instruções). Esta é a única mudança em Kotlin da v10.2 e NÃO foi compilada pelo Claude: se o build falhar, o erro estará em ScriptLab.kt; basta voltar esse arquivo ao da v10.1.
+  - `.gitignore` ignora `__pycache__/` e `*.pyc`; o `.pyc` solto que vinha no zip foi removido.
+- [x] 10.3 v10.3 — primeiro build real da v10.x: Chaquopy 16.0.0 + NumPy 1.26.2 instalaram sem erro. O único erro do compilador era `MiniTransformer.kt:383` (`fTmp[e] /= nn`, Float dividido por Int); trocado por `fTmp[e] = fTmp[e] / nn.toFloat()`.
 - [ ] 8. Polimento: ícone, gráfico da série, busca por ramo, cache de atenção (KV) para responder mais rápido
 
 ## Arquivos

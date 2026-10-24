@@ -5,3 +5,5 @@ local.properties
 .idea/
 *.jks
 *.keystore
+__pycache__/
+*.pyc

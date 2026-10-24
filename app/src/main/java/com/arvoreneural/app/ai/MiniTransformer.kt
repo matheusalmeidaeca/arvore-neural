@@ -380,7 +380,7 @@ class Work(cfg: MiniGptConfig, private val lay: Layout, private val active: IntA
         Arrays.fill(dbn, 0f)
         for (e in 0 until k) fTmp[e] = 0f
         for (t in 0 until nn) fTmp[sel[l][t]] += 1f
-        for (e in 0 until k) fTmp[e] /= nn
+        for (e in 0 until k) fTmp[e] = fTmp[e] / nn.toFloat()
         for (t in 0 until nn) {
             val xo = t * C
             val e = sel[l][t]
