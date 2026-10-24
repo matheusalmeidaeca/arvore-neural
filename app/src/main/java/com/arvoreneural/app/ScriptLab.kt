@@ -4,7 +4,6 @@ import android.content.Context
 import com.chaquo.python.Python
 import com.chaquo.python.android.AndroidPlatform
 import org.json.JSONObject
-import org.mozilla.javascript.ContextFactory
 import org.mozilla.javascript.ScriptableObject
 import org.mozilla.javascript.Context as Rhino
 
@@ -12,25 +11,6 @@ import org.mozilla.javascript.Context as Rhino
 class JsLog(private val sb: StringBuilder) {
     fun log(m: String) {
         sb.append("☕ [KOTLIN LOG] ").append(m).append('\n')
-    }
-}
-
-/** Contexto do Rhino ligado à fábrica abaixo (a fábrica conta as instruções do JavaScript). */
-private class PrazoContext(f: ContextFactory) : Rhino(f)
-
-/** Fábrica de contextos do Rhino que interrompe o JavaScript depois de 10 segundos (pega laços infinitos). */
-private class PrazoFactory : ContextFactory() {
-    private val fim = System.nanoTime() + 10_000_000_000L
-
-    override fun makeContext(): Rhino {
-        val c = PrazoContext(this)
-        c.optimizationLevel = -1 // interpretado: único modo que no Android roda e permite contar instruções
-        c.instructionObserverThreshold = 10000
-        return c
-    }
-
-    override fun observeInstructionCount(cx: Rhino, instructionCount: Int) {
-        if (System.nanoTime() > fim) throw Error("O script passou de 10 segundos e foi interrompido.")
     }
 }
 
@@ -76,8 +56,9 @@ mensagem;"""
             return "❌ Não consegui rodar o Python: " + (e.message ?: e.javaClass.simpleName)
         }
         val logs = StringBuilder()
-        val cx = PrazoFactory().enterContext()
+        val cx = Rhino.enter()
         try {
+            cx.optimizationLevel = -1 // no Android não dá para gerar bytecode Java: modo interpretado
             cx.languageVersion = Rhino.VERSION_ES6
             val scope = cx.initStandardObjects()
             ScriptableObject.putProperty(scope, "resultadoIA", disparou)
