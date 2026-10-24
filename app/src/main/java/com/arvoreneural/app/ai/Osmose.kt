@@ -11,6 +11,7 @@ import java.util.concurrent.atomic.AtomicInteger
 
 private const val TU = "@u "
 private const val TA = "@a "
+private const val DEFAULT_SYS = "Você é a Árvore: uma IA pequena, curiosa e gentil."
 
 /**
  * Osmose (v7): o app aprende sozinho, sem você tocar em "Treinar".
@@ -29,7 +30,7 @@ class Osmose(
     private val stopFlag = AtomicBoolean(false)
     private val started = AtomicBoolean(false)
 
-    /** Ligado pelo botão "Treinar" da aba Transformer: a osmose espera. */
+    /** Ligado pelo botão "Treinar" da aba Treino: a osmose espera. */
     val manual = AtomicBoolean(false)
 
     @Volatile private var foreground = false
@@ -92,6 +93,16 @@ class Osmose(
             prefs.edit().putBoolean("ai_plays_me", v).apply()
         }
 
+    /** Prompt de sistema (até 60 caracteres): vai antes de cada conversa, no treino e na resposta. Vazio desliga. */
+    @Volatile var systemPrompt: String = prefs.getString("sys_prompt", DEFAULT_SYS) ?: DEFAULT_SYS
+        set(v) {
+            val t = v.trim().replace(Regex("\\s+"), " ").take(60)
+            field = t
+            prefs.edit().putString("sys_prompt", t).apply()
+            lab.sysPrompt = t
+            lab.invalidateCorpus()
+        }
+
     @Volatile var detail: Boolean = prefs.getBoolean("detail", false)
         set(v) {
             field = v
@@ -102,6 +113,7 @@ class Osmose(
 
     fun start() {
         if (started.getAndSet(true)) return
+        lab.sysPrompt = systemPrompt
         val th = Thread { loop() }
         th.isDaemon = true
         th.start()
@@ -205,6 +217,29 @@ class Osmose(
             " caracteres | nós " + db.nodeCount()
     }
 
+    // ------------------------------------------------------------------ semente
+
+    /**
+     * Primeira abertura: o corpus ainda está vazio, então a osmose recebe o texto-semente (assets/semente.txt:
+     * pequenos diálogos @u/@a em português) para já ter o que treinar. Só acontece uma vez.
+     */
+    fun seedIfNeeded() {
+        if (prefs.getBoolean("seeded", false)) return
+        Thread {
+            try {
+                if (db.corpusChars() < 200) {
+                    val lines = ctx.assets.open("semente.txt").bufferedReader().use { it.readLines() }
+                    lab.addCorpus(lines)
+                    tree.addRepresentatives(
+                        lines.filter { it.startsWith(TA) && it.length > 40 }.map { it.removePrefix(TA) }, 6
+                    )
+                }
+                prefs.edit().putBoolean("seeded", true).apply()
+            } catch (e: Throwable) {
+            }
+        }.start()
+    }
+
     // ------------------------------------------------------------------ absorver textos
 
     /** Texto ou conversa do WhatsApp (compartilhado ou escolhido num arquivo). Devolve um resumo para mostrar. */
@@ -213,14 +248,14 @@ class Osmose(
         if (Importer.isWhatsApp(raw)) {
             val me = myName.trim()
             if (me.isEmpty()) {
-                return "É uma conversa do WhatsApp. Digite seu nome na aba Aprender (seção Osmose) e compartilhe de novo."
+                return "É uma conversa do WhatsApp. Digite seu nome na aba Treino (seção Osmose) e compartilhe de novo."
             }
             val lines = Importer.dialogue(raw, me, aiPlaysMe)
             if (lines.isEmpty()) {
                 return "Não achei mensagens aproveitáveis. O nome \"" + me + "\" bate com o que aparece no arquivo?"
             }
             val chars = lab.addCorpus(lines)
-            if (chars == 0) return "O corpus está cheio (8 milhões de caracteres). Apague parte dele na aba Transformer."
+            if (chars == 0) return "O corpus está cheio (8 milhões de caracteres). Apague parte dele na aba Treino (Avançado)."
             val nodes = tree.addRepresentatives(Importer.whatsappBlocks(raw, me), 20)
             return "Absorvido: " + lines.count { it.isNotEmpty() } + " falas (+" + chars + " caracteres) e " + nodes +
                 " nós novos. A osmose treina sozinha com o app aberto."
@@ -231,7 +266,7 @@ class Osmose(
         }
         if (blocks.isEmpty()) return "Não encontrei texto aproveitável."
         val chars = lab.addCorpus(blocks)
-        if (chars == 0) return "O corpus está cheio (8 milhões de caracteres). Apague parte dele na aba Transformer."
+        if (chars == 0) return "O corpus está cheio (8 milhões de caracteres). Apague parte dele na aba Treino (Avançado)."
         val nodes = tree.addRepresentatives(blocks, 15)
         return "Absorvido: " + blocks.size + " trechos (+" + chars + " caracteres) e " + nodes +
             " nós novos. A osmose treina sozinha com o app aberto."
@@ -251,16 +286,18 @@ class Osmose(
 
     /** Diálogo recente no mesmo formato do treino ("@u ...", "@a ..."), terminando com "@a " para o modelo continuar. */
     private fun buildPrompt(h: List<Pair<Boolean, String>>, cur: String): String {
+        val sys = lab.sysLine()
         val lines = ArrayList<String>()
         for ((fromUser, tx) in h.takeLast(4)) {
             val one = firstLine(tx) ?: continue
             lines.add((if (fromUser) TU else TA) + clip(one, 70))
         }
-        lines.add(TU + clip(cur, 100))
-        var prompt = lines.joinToString("\n") + "\n" + TA
-        while (prompt.length > 130 && lines.size > 1) {
+        lines.add(TU + clip(cur, if (sys.isEmpty()) 100 else 80))
+        val limit = if (sys.isEmpty()) 130 else 150
+        var prompt = sys + lines.joinToString("\n") + "\n" + TA
+        while (prompt.length > limit && lines.size > 1) {
             lines.removeAt(0)
-            prompt = lines.joinToString("\n") + "\n" + TA
+            prompt = sys + lines.joinToString("\n") + "\n" + TA
         }
         return prompt
     }

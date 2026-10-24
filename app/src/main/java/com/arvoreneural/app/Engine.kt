@@ -11,6 +11,7 @@ import androidx.core.content.ContextCompat
 import com.arvoreneural.app.ai.HashEmbedder
 import com.arvoreneural.app.ai.MiniLab
 import com.arvoreneural.app.ai.Osmose
+import com.arvoreneural.app.ai.Sizes
 import com.arvoreneural.app.ai.Tree
 import com.arvoreneural.app.data.Db
 import kotlinx.coroutines.CoroutineScope
@@ -21,7 +22,7 @@ import kotlinx.coroutines.withContext
 import java.io.File
 import java.util.concurrent.atomic.AtomicBoolean
 
-/** Estado da aba Transformer. Vive no Engine, então trocar de aba não perde nada. */
+/** Estado do treino manual (aba Treino). Vive no Engine, então trocar de aba não perde nada. */
 class TState {
     var status by mutableStateOf("")
     var training by mutableStateOf(false)
@@ -29,7 +30,6 @@ class TState {
     var output by mutableStateOf("")
     var corpusInfo by mutableStateOf("")
     var prompt by mutableStateOf("")
-    var from by mutableStateOf("")
     val stop = AtomicBoolean(false)
 }
 
@@ -55,11 +55,10 @@ object Engine {
     // rascunhos e mensagens das telas (sobrevivem à troca de aba)
     var chatInput by mutableStateOf("")
     var learnText by mutableStateOf("")
-    var learnFrom by mutableStateOf("")
-    var learnMsg by mutableStateOf("")
     var osmoseMsg by mutableStateOf("")
     var backupMsg by mutableStateOf("")
     var treeMsg by mutableStateOf("")
+    var size by mutableIntStateOf(0)
 
     private val chatLock = Any()
 
@@ -69,14 +68,35 @@ object Engine {
         appCtx = ctx.applicationContext
         val d = Db(appCtx)
         val tr = Tree(d, HashEmbedder())
-        val l = MiniLab(d)
+        // tamanho do modelo: se a tentativa anterior com um tamanho grande não terminou (app morto por falta
+        // de memória), volta ao Mini para o app não ficar preso num ciclo de falhas
+        val sp = appCtx.getSharedPreferences("arvore_prefs", Context.MODE_PRIVATE)
+        var sz = sp.getInt("model_size", 0).coerceIn(0, Sizes.names.size - 1)
+        var note = ""
+        if (sp.getInt("size_trying", -1) >= 0) {
+            sp.edit().putInt("model_size", 0).putInt("size_trying", -1).commit()
+            sz = 0
+            note = "O modelo grande não coube na memória do celular. Voltei ao Mini."
+        }
+        if (sz > 0) sp.edit().putInt("size_trying", sz).commit()
+        val l = try {
+            MiniLab(d, sz)
+        } catch (e: OutOfMemoryError) {
+            sp.edit().putInt("model_size", 0).putInt("size_trying", -1).commit()
+            sz = 0
+            note = "Faltou memória para o modelo grande. Voltei ao Mini."
+            MiniLab(d, 0)
+        }
+        sp.edit().putInt("size_trying", -1).commit()
+        size = sz
         tr.lab = l
         db = d
         tree = tr
         lab = l
         osmose = Osmose(appCtx, d, tr, l)
         osmose.start()
-        ts.status = "Passos treinados: " + l.gpt.step
+        osmose.seedIfNeeded()
+        ts.status = if (note.isNotEmpty()) note else "Passos treinados: " + l.gpt.step
         ready = true
         scope.launch(Dispatchers.IO) {
             val h = db.chatHistory()
@@ -158,7 +178,7 @@ object Engine {
                     lab.train(total, 4, -1L, ts.stop) { i, loss ->
                         val sec = (System.currentTimeMillis() - t0) / 1000
                         ts.status = "passo " + lab.gpt.step + " | perda " + "%.3f".format(loss) +
-                            " | " + i + "/" + total + " | " + sec + "s"
+                            " | " + i + "/" + total + " | " + sec + "s | " + "%.1f".format(sec.toDouble() / i) + " s/passo"
                     }
                     "Treino concluído: " + lab.gpt.step + " passos no total, perda " + "%.3f".format(lab.gpt.lastLoss) + "."
                 }
@@ -170,6 +190,24 @@ object Engine {
             osmose.hold(false)
             ts.training = false
             ts.busy = false
+        }
+    }
+
+    // ------------------------------------------------------------------ tamanho do modelo
+
+    /** Grava o novo tamanho e para tudo. O app precisa fechar e abrir de novo; os pesos do tamanho antigo ficam no banco até o novo modelo salvar. */
+    fun changeSize(n: Int): String {
+        return try {
+            ts.stop.set(true)
+            osmose.pauseNow()
+            osmose.frozen = true
+            lab.frozen = true
+            Thread.sleep(1500)
+            appCtx.getSharedPreferences("arvore_prefs", Context.MODE_PRIVATE)
+                .edit().putInt("model_size", n).putInt("size_trying", -1).commit()
+            "Tamanho trocado para " + Sizes.names[n] + ". O app vai fechar; abra de novo."
+        } catch (e: Throwable) {
+            "Erro ao trocar o tamanho: " + (e.message ?: "")
         }
     }
 

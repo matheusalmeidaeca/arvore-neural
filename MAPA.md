@@ -41,10 +41,22 @@ App Android nativo que (1) organiza conhecimento numa árvore, (2) usa modelo de
   - `Tree.addNode`, `Tree.editNode`, `Tree.importOutline`; `Db.updateNode`, `Db.batch` (transação). Com "treinar com os caminhos", cada nó novo gera uma linha no corpus como `B > Br > Bra`.
   - O texto de cada nó é o que o transformer aprende a reproduzir, condicionado ao galho (vetores dos ancestrais somados, até 8 níveis).
   - `exemplo_abecedario.txt` na raiz do zip: lista de exemplo para importar.
+- [x] 7.3 v7.3 — tamanhos de modelo e prompt de sistema:
+  - `Sizes` (MiniTransformer.kt): Mini ≈1M (c128, L4), Médio ≈5M (c256, L6, 4 threads), Grande ≈15M (c384, L8, 2 threads), 50M experimental (c640, L10, 1 thread). Cabeças de 32 dims; lr menor nos maiores (1e-3, 6e-4, 4e-4, 3e-4) com aquecimento de 100 passos. Escolha na aba Transformer (SizeCard); trocar grava `model_size` em `arvore_prefs`, fecha o app e recomeça os pesos (corpus, árvore e conversa ficam).
+  - Trava contra ciclo de falhas: `size_trying` marca a tentativa; se o app morrer por falta de memória, a próxima abertura volta ao Mini. OutOfMemoryError na construção também volta ao Mini. Manifest com `largeHeap`.
+  - Memória estimada (floats x4 x (3 + threads) + atividades): Mini ~70 MB, Médio ~270 MB, Grande ~420 MB, 50M ~930 MB (provavelmente não cabe). FLOPs por passo (batch 4 x 192): 4,6 / 24 / 68 / 231 GFLOP.
+  - Prompt de sistema: `Osmose.systemPrompt` (até 60 letras, padrão "Você é a Árvore..."), linha `@s ...` inserida no fluxo de treino antes de cada trecho de diálogo (`MiniLab.applySys`, o corpus guardado não muda) e no começo do prompt da resposta (`buildPrompt`). Trocar o prompt invalida o cache do corpus.
+  - Status do treino manual mostra s/passo.
+- [x] 8.0 v8 — tudo junto, menos peças soltas:
+  - Abas: Conversa, Árvore, **Treino** (junta as antigas Aprender e Transformer), Prever. A aba Crescer da v7.4 saiu.
+  - Uma só porta de entrada de texto: `Osmose.absorb` (arquivo, texto colado ou compartilhado de outro app). Removidos `Tree.learnFile`, `Tree.importMass`, `Tree.chat`, `MiniLab.generateFor` e o campo "só mensagens de".
+  - Semente: na primeira abertura a osmose recebe `assets/semente.txt` (~90 pequenos diálogos @u/@a em português) para já ter o que treinar. Só uma vez (`seeded` em `arvore_prefs`).
+  - Mistura de especialistas (`ai/DynamicSuperAI.kt`: `Expert`, `Router`, `DynamicSuperAI`) agora serve a aba Prever como segunda opinião (`Forecaster.predictMoe`, janelas de 6 valores, exige 14 valores positivos). Em testes com séries sintéticas ela NÃO supera a tendência linear em séries simples; fica como comparação experimental.
+  - Tamanho 50M removido (não cabe na memória do celular). Tamanhos: Mini, Médio, Grande.
 - [ ] 8. Polimento: ícone, gráfico da série, busca por ramo, cache de atenção (KV) para responder mais rápido
 
 ## Arquivos
-- `app/src/main/java/com/arvoreneural/app/MainActivity.kt` — telas: Conversa, Árvore, Aprender, Prever
+- `app/src/main/java/com/arvoreneural/app/MainActivity.kt` — telas: Conversa, Árvore, Treino, Prever
 - `.../data/Db.kt` — tabelas `nodes` e `points`
 - `.../ai/Embedder.kt` — interface + HashEmbedder
 - `.../ai/Tree.kt` — lógica da árvore e conversa (`chat`)
@@ -53,7 +65,9 @@ App Android nativo que (1) organiza conhecimento numa árvore, (2) usa modelo de
 - `.../Engine.kt` — estado do app fora das telas, treino manual, conversa, backup
 - `.../TrainService.kt` — serviço em primeiro plano
 - `.../ai/Osmose.kt` — aprendizado contínuo, absorção de textos/conversas, resposta única da Conversa, 👍
-- `.../ai/Forecaster.kt` — previsão
+- `.../ai/Forecaster.kt` — previsão (tendência + segunda opinião)
+- `.../ai/DynamicSuperAI.kt` — especialistas que crescem
+- `app/src/main/assets/semente.txt` — diálogos iniciais da osmose
 - `.github/workflows/build.yml` — build do APK
 
 ## O que isto é (e não é)

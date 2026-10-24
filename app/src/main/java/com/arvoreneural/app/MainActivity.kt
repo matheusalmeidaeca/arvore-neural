@@ -63,6 +63,7 @@ import com.arvoreneural.app.ai.Forecaster
 import com.arvoreneural.app.ai.HashEmbedder
 import com.arvoreneural.app.ai.MiniLab
 import com.arvoreneural.app.ai.Osmose
+import com.arvoreneural.app.ai.Sizes
 import com.arvoreneural.app.ai.miniSelfTest
 import com.arvoreneural.app.ai.Tree
 import com.arvoreneural.app.data.Db
@@ -130,8 +131,8 @@ class MainActivity : ComponentActivity() {
 @Composable
 fun App() {
     var tab by remember { mutableIntStateOf(0) }
-    val labels = listOf("Conversa", "Árvore", "Aprender", "Prever", "Transformer")
-    val icons = listOf("💬", "🌳", "✍️", "📈", "🧠")
+    val labels = listOf("Conversa", "Árvore", "Treino", "Prever")
+    val icons = listOf("💬", "🌳", "🌊", "📈")
     Scaffold(
         bottomBar = {
             NavigationBar {
@@ -150,9 +151,8 @@ fun App() {
             when (tab) {
                 0 -> ChatScreen()
                 1 -> TreeScreen(Engine.db, Engine.tree, Engine.version) { Engine.version++ }
-                2 -> LearnScreen(Engine.tree, Engine.db, Engine.osmose) { Engine.version++ }
-                3 -> ForecastScreen(Engine.db)
-                else -> TransformerScreen(Engine.lab, Engine.tree, Engine.osmose)
+                2 -> TrainScreen { Engine.version++ }
+                else -> ForecastScreen(Engine.db)
             }
         }
     }
@@ -407,69 +407,128 @@ fun TreeScreen(db: Db, tree: Tree, version: Int, onChange: () -> Unit) {
     }
 }
 
+/** Treino: tudo que alimenta e treina o modelo, numa tela só (osmose, texto, treino manual, tamanho, backup, avançado). */
 @Composable
-fun LearnScreen(tree: Tree, db: Db, osmose: Osmose, onChange: () -> Unit) {
-    val ctx = LocalContext.current
+fun TrainScreen(onChange: () -> Unit) {
+    val ts = Engine.ts
+    val lab = Engine.lab
     var confirmClear by remember { mutableStateOf(false) }
-    val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? ->
-        if (uri != null) {
-            val from = Engine.learnFrom
-            val app = ctx.applicationContext
-            Engine.learnMsg = "Aprendendo…"
-            Engine.scope.launch(Dispatchers.IO) {
-                val n = try {
-                    val raw = app.contentResolver.openInputStream(uri)?.bufferedReader()?.readText() ?: ""
-                    tree.learnFile(raw, from)
-                } catch (e: Throwable) {
-                    0
-                }
-                Engine.learnMsg = "$n trechos aprendidos"
-                onChange()
-            }
-        }
+    var confirmReset by remember { mutableStateOf(false) }
+    var confirmCorpus by remember { mutableStateOf(false) }
+    val view = LocalView.current
+    val training = ts.training
+    DisposableEffect(training) {
+        view.keepScreenOn = training
+        onDispose { view.keepScreenOn = false }
     }
     Column(
         modifier = Modifier.verticalScroll(rememberScrollState()),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
-        OsmoseCard(osmose, onChange)
-        BackupCard()
+        Text(
+            "Modelo: " + lab.gpt.lay.n + " parâmetros (" + lab.gpt.cfg.l + " camadas, " + lab.gpt.cfg.c + " dims, contexto " +
+                lab.gpt.cfg.t + "). Cada nó da árvore é um vetor dentro dele. A osmose treina sozinha; aqui você alimenta e acelera.",
+            style = MaterialTheme.typography.bodyMedium
+        )
+        OsmoseCard(Engine.osmose, onChange)
         OutlinedTextField(
             value = Engine.learnText,
             onValueChange = { Engine.learnText = it },
-            label = { Text("Ensine algo à árvore") },
-            modifier = Modifier.fillMaxWidth().heightIn(min = 140.dp)
+            label = { Text("Colar um texto para a osmose absorver") },
+            modifier = Modifier.fillMaxWidth().heightIn(min = 120.dp)
         )
         Button(onClick = {
             val t = Engine.learnText
             Engine.learnText = ""
-            Engine.learnMsg = "Aprendendo…"
+            Engine.osmoseMsg = "Absorvendo…"
             Engine.scope.launch(Dispatchers.IO) {
-                try {
-                    tree.learn(t)
-                    Engine.learnMsg = "Aprendido!"
+                Engine.osmoseMsg = try {
+                    Engine.osmose.absorb(t)
                 } catch (e: Throwable) {
-                    Engine.learnMsg = "Erro ao aprender."
+                    "Erro ao absorver."
                 }
                 onChange()
             }
-        }) { Text("Aprender") }
+        }) { Text("Absorver texto") }
+
+        Text("🏋️ Treino manual", style = MaterialTheme.typography.titleMedium)
+        Text(ts.status, style = MaterialTheme.typography.titleSmall)
+        Text(ts.corpusInfo, style = MaterialTheme.typography.bodySmall)
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Button(enabled = !ts.busy, onClick = { Engine.startTrain(300) }) { Text("Treinar 300") }
+            Button(enabled = !ts.busy, onClick = { Engine.startTrain(2000) }) { Text("Treinar 2000") }
+            Button(enabled = ts.training, onClick = { ts.stop.set(true) }) { Text("Parar") }
+        }
+
+        SizeCard()
+        BackupCard()
+
+        Text("🧪 Avançado", style = MaterialTheme.typography.titleMedium)
         OutlinedTextField(
-            value = Engine.learnFrom,
-            onValueChange = { Engine.learnFrom = it },
-            label = { Text("WhatsApp: só mensagens de (nome, opcional)") },
+            value = ts.prompt,
+            onValueChange = { ts.prompt = it },
+            label = { Text("Começo do texto (opcional)") },
             modifier = Modifier.fillMaxWidth()
         )
-        Button(onClick = { picker.launch(arrayOf("text/*")) }) { Text("Importar arquivo .txt") }
-        Text(Engine.learnMsg)
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Button(enabled = !ts.busy, onClick = {
+                val p = ts.prompt
+                ts.busy = true
+                ts.output = "Gerando…"
+                Engine.scope.launch(Dispatchers.Default) {
+                    ts.output = try {
+                        p + lab.generateFree(p, 200)
+                    } catch (e: Throwable) {
+                        "Erro ao gerar: " + (e.message ?: "")
+                    }
+                    ts.busy = false
+                }
+            }) { Text("Gerar texto") }
+            Button(enabled = !ts.busy, onClick = {
+                ts.busy = true
+                ts.output = "Testando…"
+                Engine.scope.launch(Dispatchers.Default) {
+                    ts.output = try {
+                        miniSelfTest()
+                    } catch (e: Throwable) {
+                        "Erro no autoteste: " + (e.message ?: "")
+                    }
+                    ts.busy = false
+                }
+            }) { Text("Autoteste") }
+        }
+        Text(ts.output)
+        TextButton(enabled = !ts.busy, onClick = {
+            if (!confirmCorpus) {
+                confirmCorpus = true
+            } else {
+                confirmCorpus = false
+                Engine.scope.launch(Dispatchers.IO) {
+                    lab.clearCorpus()
+                    ts.corpusInfo = "Corpus de treino: 0 caracteres"
+                }
+            }
+        }) { Text(if (confirmCorpus) "Toque de novo para confirmar" else "Apagar corpus de treino") }
+        TextButton(enabled = !ts.busy, onClick = {
+            if (!confirmReset) {
+                confirmReset = true
+            } else {
+                confirmReset = false
+                Engine.scope.launch(Dispatchers.IO) {
+                    lab.reset()
+                    ts.status = "Modelo reiniciado do zero."
+                    ts.output = ""
+                }
+            }
+        }) { Text(if (confirmReset) "Toque de novo para confirmar" else "Reiniciar modelo (pesos)") }
         TextButton(onClick = {
             if (!confirmClear) {
                 confirmClear = true
             } else {
                 confirmClear = false
                 Engine.scope.launch(Dispatchers.IO) {
-                    db.clearNodes()
-                    Engine.learnMsg = "Árvore apagada"
+                    Engine.db.clearNodes()
+                    Engine.osmoseMsg = "Árvore apagada"
                     onChange()
                 }
             }
@@ -482,6 +541,7 @@ fun OsmoseCard(osmose: Osmose, onChange: () -> Unit) {
     val ctx = LocalContext.current
     var on by remember { mutableStateOf(osmose.enabled) }
     var name by remember { mutableStateOf(osmose.myName) }
+    var sysText by remember { mutableStateOf(osmose.systemPrompt) }
     var imita by remember { mutableStateOf(osmose.aiPlaysMe) }
     var detail by remember { mutableStateOf(osmose.detail) }
     var status by remember { mutableStateOf("") }
@@ -524,6 +584,20 @@ fun OsmoseCard(osmose: Osmose, onChange: () -> Unit) {
             onValueChange = { name = it; osmose.myName = it },
             label = { Text("Seu nome nas conversas do WhatsApp") },
             modifier = Modifier.fillMaxWidth()
+        )
+        OutlinedTextField(
+            value = sysText,
+            onValueChange = { sysText = it.take(60) },
+            label = { Text("Prompt de sistema (até 60 letras)") },
+            modifier = Modifier.fillMaxWidth()
+        )
+        Button(onClick = {
+            osmose.systemPrompt = sysText
+            Engine.osmoseMsg = "Prompt salvo. Vale para o treino daqui para frente e para as respostas."
+        }) { Text("Salvar prompt") }
+        Text(
+            "O prompt entra antes de cada conversa, no treino e na resposta. Um modelo pequeno não obedece ordens: ele aprende o estilo dos diálogos que viu com esse prompt. Troque só de vez em quando; vazio desliga.",
+            style = MaterialTheme.typography.bodySmall
         )
         Row(verticalAlignment = Alignment.CenterVertically) {
             Switch(checked = imita, onCheckedChange = { imita = it; osmose.aiPlaysMe = it })
@@ -602,6 +676,10 @@ fun ForecastScreen(db: Db) {
         points = withContext(Dispatchers.IO) { db.points(name.trim()).map { it.value } }
     }
     val pred = Forecaster.predict(points)
+    var moe by remember { mutableStateOf<Pair<Double, Int>?>(null) }
+    LaunchedEffect(points) {
+        moe = withContext(Dispatchers.Default) { Forecaster.predictMoe(points) }
+    }
 
     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
         OutlinedTextField(
@@ -634,121 +712,45 @@ fun ForecastScreen(db: Db) {
             else "Preciso de ao menos 2 valores para prever.",
             style = MaterialTheme.typography.titleMedium
         )
+        val m = moe
+        Text(
+            if (m != null) "🌱 Segunda opinião (especialistas que crescem, experimental): " + "%.2f".format(m.first) +
+                " com " + m.second + " especialistas. Compare com a tendência acima."
+            else "🌱 A segunda opinião (experimental) precisa de 14 valores positivos.",
+            style = MaterialTheme.typography.bodySmall
+        )
     }
 }
 
 @Composable
-fun TransformerScreen(lab: MiniLab, tree: Tree, osmose: Osmose) {
-    val ts = Engine.ts
-    var confirmReset by remember { mutableStateOf(false) }
-    var confirmCorpus by remember { mutableStateOf(false) }
-    val view = LocalView.current
-    val training = ts.training
-    DisposableEffect(training) {
-        view.keepScreenOn = training
-        onDispose { view.keepScreenOn = false }
-    }
-    val ctx = LocalContext.current
-    val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? ->
-        if (uri != null) {
-            val from = ts.from
-            val app = ctx.applicationContext
-            ts.busy = true
-            ts.status = "Lendo e preparando o arquivo…"
-            Engine.scope.launch(Dispatchers.IO) {
-                val msg = try {
-                    val raw = app.contentResolver.openInputStream(uri)?.bufferedReader()?.readText() ?: ""
-                    tree.importMass(raw, from)
-                } catch (e: Throwable) {
-                    "Erro ao importar: " + (e.message ?: "")
-                }
-                ts.corpusInfo = "Corpus de treino em massa: " + lab.corpusChars() + " caracteres"
-                ts.status = msg
-                ts.busy = false
-            }
-        }
-    }
-
-    Column(
-        modifier = Modifier.verticalScroll(rememberScrollState()),
-        verticalArrangement = Arrangement.spacedBy(10.dp)
-    ) {
+fun SizeCard() {
+    var pick by remember { mutableStateOf(-1) }
+    var msg by remember { mutableStateOf("") }
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Text("📏 Tamanho do modelo", style = MaterialTheme.typography.titleMedium)
         Text(
-            "Seu mini-transformer em Kotlin: " + lab.gpt.lay.n + " parâmetros (4 camadas, 128 dims, 4 cabeças, contexto 192). Cada nó da árvore tem um vetor próprio dentro do transformer, somado aos dos seus ancestrais: a árvore faz parte do modelo. Ele aprende sozinho (osmose, aba Aprender); aqui você treina mais fundo à mão. O treino continua se você trocar de aba ou sair do app (aparece uma notificação).",
-            style = MaterialTheme.typography.bodyMedium
+            "Trocar o tamanho recomeça o treino do modelo (corpus, árvore e conversa ficam). Modelos maiores treinam bem mais devagar e precisam de mais texto. Faça um backup antes (logo abaixo).",
+            style = MaterialTheme.typography.bodySmall
         )
-        Text(ts.status, style = MaterialTheme.typography.titleSmall)
-        Text(ts.corpusInfo, style = MaterialTheme.typography.bodySmall)
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Button(enabled = !ts.busy, onClick = { Engine.startTrain(300) }) { Text("Treinar 300") }
-            Button(enabled = !ts.busy, onClick = { Engine.startTrain(2000) }) { Text("Treinar 2000") }
-            Button(enabled = ts.training, onClick = { ts.stop.set(true) }) { Text("Parar") }
-        }
-        OutlinedTextField(
-            value = ts.from,
-            onValueChange = { ts.from = it },
-            label = { Text("WhatsApp: só mensagens de (opcional)") },
-            modifier = Modifier.fillMaxWidth()
-        )
-        Button(enabled = !ts.busy, onClick = { picker.launch(arrayOf("text/*")) }) {
-            Text("Importar texto para treino em massa")
-        }
-        TextButton(enabled = !ts.busy, onClick = {
-            if (!confirmCorpus) {
-                confirmCorpus = true
-            } else {
-                confirmCorpus = false
-                Engine.scope.launch(Dispatchers.IO) {
-                    lab.clearCorpus()
-                    ts.corpusInfo = "Corpus de treino em massa: 0 caracteres"
-                }
-            }
-        }) { Text(if (confirmCorpus) "Toque de novo para confirmar" else "Apagar corpus de treino") }
-        OutlinedTextField(
-            value = ts.prompt,
-            onValueChange = { ts.prompt = it },
-            label = { Text("Começo do texto (opcional)") },
-            modifier = Modifier.fillMaxWidth()
-        )
-        Button(enabled = !ts.busy, onClick = {
-            val p = ts.prompt
-            ts.busy = true
-            ts.output = "Gerando…"
-            Engine.scope.launch(Dispatchers.Default) {
-                ts.output = try {
-                    p + lab.generateFree(p, 200)
-                } catch (e: Throwable) {
-                    "Erro ao gerar: " + (e.message ?: "")
-                }
-                ts.busy = false
-            }
-        }) { Text("Gerar texto") }
-        Text(ts.output)
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Button(enabled = !ts.busy, onClick = {
-                ts.busy = true
-                ts.output = "Testando…"
-                Engine.scope.launch(Dispatchers.Default) {
-                    ts.output = try {
-                        miniSelfTest()
-                    } catch (e: Throwable) {
-                        "Erro no autoteste: " + (e.message ?: "")
-                    }
-                    ts.busy = false
-                }
-            }) { Text("Autoteste") }
-            TextButton(enabled = !ts.busy, onClick = {
-                if (!confirmReset) {
-                    confirmReset = true
+        for (i in Sizes.names.indices) {
+            val cur = i == Engine.size
+            Button(enabled = !cur, onClick = {
+                if (pick != i) {
+                    pick = i
                 } else {
-                    confirmReset = false
+                    pick = -1
+                    msg = "Trocando…"
                     Engine.scope.launch(Dispatchers.IO) {
-                        lab.reset()
-                        ts.status = "Transformer reiniciado do zero."
-                        ts.output = ""
+                        msg = Engine.changeSize(i)
+                        delay(2500)
+                        android.os.Process.killProcess(android.os.Process.myPid())
                     }
                 }
-            }) { Text(if (confirmReset) "Toque de novo para confirmar" else "Reiniciar transformer") }
+            }) {
+                Text(Sizes.names[i] + (if (cur) " (atual)" else if (pick == i) ": toque de novo para confirmar" else ""))
+            }
+            Text(Sizes.info[i], style = MaterialTheme.typography.bodySmall)
         }
+        if (msg.isNotEmpty()) Text(msg)
     }
 }

@@ -11,8 +11,8 @@ android {
         applicationId = "com.arvoreneural.app"
         minSdk = 26
         targetSdk = 34
-        versionCode = 4
-        versionName = "7.2"
+        versionCode = 6
+        versionName = "8.0"
     }
     // Chave fixa: o workflow grava arvore.jks na raiz a partir dos Secrets do GitHub.
     // Sem a chave, o build cai na assinatura de depuração (e o APK não atualiza por cima do antigo).

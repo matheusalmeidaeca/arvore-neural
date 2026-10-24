@@ -26,8 +26,28 @@ import kotlin.math.tanh
 class MiniGptConfig(
     val v: Int, val t: Int = 192, val c: Int = 128, val h: Int = 4, val l: Int = 4,
     /** quantidade de "vetores de galho": cada nó da árvore usa um deles */
-    val s: Int = 1024
+    val s: Int = 1024,
+    /** threads do treino: cada uma tem uma cópia do gradiente, então modelos grandes usam menos */
+    val maxThreads: Int = 4,
+    /** taxa de aprendizado: modelos maiores pedem passos menores */
+    val lr: Float = 1e-3f
 )
+
+/** Tamanhos escolhíveis do modelo (v7.3). Cabeças de 32 dimensões em todos. */
+object Sizes {
+    val names = listOf("Mini", "Médio", "Grande")
+    val info = listOf(
+        "≈1M parâmetros, ~70 MB de memória",
+        "≈5M parâmetros, ~270 MB, passos ~5x mais lentos",
+        "≈15M parâmetros, ~420 MB, passos ~15x mais lentos"
+    )
+
+    fun config(size: Int, v: Int): MiniGptConfig = when (size) {
+        1 -> MiniGptConfig(v = v, c = 256, h = 8, l = 6, maxThreads = 4, lr = 6e-4f)
+        2 -> MiniGptConfig(v = v, c = 384, h = 12, l = 8, maxThreads = 2, lr = 4e-4f)
+        else -> MiniGptConfig(v = v)
+    }
+}
 
 /** Vocabulário fixo (o mini.py montava pelo texto; aqui precisa ser fixo para treinar aos poucos). */
 object Vocab {
@@ -414,7 +434,7 @@ class MiniGpt(val cfg: MiniGptConfig) {
     @Volatile var step = 0
     @Volatile var lastLoss = Float.NaN
 
-    private val nThreads = max(1, min(4, Runtime.getRuntime().availableProcessors()))
+    private val nThreads = max(1, min(cfg.maxThreads, Runtime.getRuntime().availableProcessors()))
     private val pool = Executors.newFixedThreadPool(nThreads) { r -> Thread(r).also { it.isDaemon = true } }
     private val works = Array(nThreads) { Work(cfg, lay) }
 
@@ -613,8 +633,8 @@ class Doc(val id: Long, val slots: IntArray, val ids: IntArray)
  * é somado aos vetores de todos os seus ancestrais, então a hierarquia da árvore vira parte do modelo.
  * Treino e respostas usam o galho do nó; o texto de cada nó é o que o modelo aprende a reproduzir.
  */
-class MiniLab(private val db: Db) {
-    val gpt = MiniGpt(MiniGptConfig(v = Vocab.size))
+class MiniLab(private val db: Db, val size: Int = 0) {
+    val gpt = MiniGpt(Sizes.config(size, Vocab.size))
     val lock = Any()
     private val bg = Executors.newSingleThreadExecutor { r -> Thread(r).also { it.isDaemon = true } }
 
@@ -658,13 +678,50 @@ class MiniLab(private val db: Db) {
     }
 
     @Volatile private var corpCache: IntArray? = null
+    @Volatile private var lastDialogue = false
+
+    /** Prompt de sistema (até 60 caracteres): vira a linha "@s ..." antes de cada conversa, no treino e na resposta. */
+    @Volatile var sysPrompt: String = ""
+
+    fun sysLine(): String {
+        val t = sysPrompt.trim()
+        return if (t.isEmpty()) "" else "@s " + t.take(60) + "\n"
+    }
+
+    fun invalidateCorpus() {
+        corpCache = null
+    }
+
+    /**
+     * Põe a linha "@s ..." antes de cada trecho de diálogo (sequência de linhas "@u"/"@a").
+     * É feito só no fluxo de treino; o texto guardado no banco não muda, então trocar o prompt vale para tudo.
+     */
+    private fun applySys(text: String, start: Boolean): Pair<String, Boolean> {
+        val sp = sysLine()
+        val sb = StringBuilder(text.length + 256)
+        var prev = start
+        var i = 0
+        val n = text.length
+        while (i < n) {
+            var e = text.indexOf('\n', i)
+            if (e < 0) e = n
+            val dlg = text.startsWith("@u ", i) || text.startsWith("@a ", i)
+            if (dlg && !prev && sp.isNotEmpty()) sb.append(sp)
+            sb.append(text, i, if (e < n) e + 1 else n)
+            prev = dlg
+            i = e + 1
+        }
+        return sb.toString() to prev
+    }
 
     /** Texto do treino em massa: um documento por linha; "\n" (id 0) separa os documentos. */
     @Synchronized
     private fun corpusTokens(): IntArray {
         val c = corpCache
         if (c != null) return c
-        val enc = Vocab.encode(db.corpusText())
+        val sys = applySys(db.corpusText(), false)
+        lastDialogue = sys.second
+        val enc = Vocab.encode(sys.first)
         val out = if (enc.isNotEmpty() && enc[0] != 0) {
             val a = IntArray(enc.size + 1)
             System.arraycopy(enc, 0, a, 1, enc.size)
@@ -687,7 +744,9 @@ class MiniLab(private val db: Db) {
         if (n != text.length) {
             corpCache = null
         } else if (c != null) {
-            val enc = Vocab.encode(text)
+            val sys = applySys(text, lastDialogue)
+            lastDialogue = sys.second
+            val enc = Vocab.encode(sys.first)
             val out = c.copyOf(c.size + enc.size)
             System.arraycopy(enc, 0, out, c.size, enc.size)
             corpCache = out
@@ -741,7 +800,8 @@ class MiniLab(private val db: Db) {
         var i = 0
         while (i < steps && (stop == null || !stop.get())) {
             val seqs = sample(ds, corp, focus, batch, rnd)
-            val loss = synchronized(lock) { gpt.trainBatch(seqs, 1e-3f) }
+            val lr = gpt.cfg.lr * minOf(1f, (gpt.step + 1) / 100f)
+            val loss = synchronized(lock) { gpt.trainBatch(seqs, lr) }
             i++
             onStep(i, loss)
             if (i % 100 == 0 && !frozen) synchronized(lock) { gpt.save(db) }
@@ -758,14 +818,6 @@ class MiniLab(private val db: Db) {
             } catch (e: Exception) {
             }
         }
-    }
-
-    /** Resposta do transformer condicionada ao galho do nó escolhido pela árvore. */
-    fun generateFor(nodeId: Long, maxNew: Int = 120): String {
-        val byId = HashMap<Long, Node>()
-        for (n in db.allNodes()) byId[n.id] = n
-        val slots = pathSlots(byId, nodeId)
-        return synchronized(lock) { gpt.generate(slots, "", maxNew, 0.7f, Random(), true) }.trim()
     }
 
     /** Resposta de conversa: o prompt é o diálogo recente ("@u ...\n@a "); o galho da árvore condiciona o modelo. */

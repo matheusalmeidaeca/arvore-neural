@@ -8,7 +8,6 @@ class Tree(private val db: Db, private val emb: Embedder) {
 
     companion object {
         const val MIN_SIM = 0.30f
-        const val MAX_CHUNKS = 400
     }
 
     /** Transformer ligado à árvore (definido na inicialização do app). */
@@ -120,47 +119,6 @@ class Tree(private val db: Db, private val emb: Embedder) {
             (if (cut) ". Só as 3000 primeiras linhas entraram." else ".")
     }
 
-    /** onlyFrom só vale para conversas do WhatsApp: aprende apenas mensagens de quem tem esse nome. */
-    fun learnFile(raw: String, onlyFrom: String = ""): Int {
-        var count = 0
-        val parts = if (Importer.isWhatsApp(raw)) Importer.whatsappBlocks(raw, onlyFrom) else chunk(raw)
-        for (c in parts.take(MAX_CHUNKS)) {
-            if (learn(c) > 0) count++
-        }
-        return count
-    }
-
-    /**
-     * Treino em massa: o arquivo inteiro vai para o corpus do transformer e a árvore recebe só
-     * alguns nós representativos (assuntos bem diferentes entre si).
-     */
-    fun importMass(raw: String, onlyFrom: String = "", maxNodes: Int = 40): String {
-        val blocks = Importer.massBlocks(raw, onlyFrom)
-        if (blocks.isEmpty()) return "Não encontrei texto aproveitável nesse arquivo."
-        val l = lab
-        val chars = if (l != null) l.addCorpus(blocks) else 0
-        val reps = ArrayList<FloatArray>()
-        var nodes = 0
-        for (i in blocks.indices.shuffled(java.util.Random(7))) {
-            if (nodes >= maxNodes) break
-            val b = blocks[i]
-            val e = emb.embed(b)
-            var dup = false
-            for (r in reps) {
-                if (cosine(e, r) >= 0.5f) {
-                    dup = true
-                    break
-                }
-            }
-            if (dup) continue
-            reps.add(e)
-            learn(b)
-            nodes++
-        }
-        return "Importado: " + blocks.size + " trechos. Corpus +" + chars + " caracteres; árvore +" + nodes +
-            " nós representativos. Agora toque em Treinar."
-    }
-
     /** Cria até maxNodes nós representativos (assuntos bem diferentes entre si) a partir dos blocos. */
     fun addRepresentatives(blocks: List<String>, maxNodes: Int): Int {
         val reps = ArrayList<FloatArray>()
@@ -194,40 +152,6 @@ class Tree(private val db: Db, private val emb: Embedder) {
             .take(k)
     }
 
-    /** Conversa: pergunta (com "?") consulta a árvore; frase afirmativa é aprendida. */
-    fun chat(msg: String): String {
-        val text = msg.trim()
-        if (text.isEmpty()) return ""
-        val found = ask(text, 3).filter { it.second >= 0.15f }
-        if (text.contains("?")) {
-            if (found.isEmpty()) return "Ainda não sei nada sobre isso. Me ensine com uma frase (sem interrogação)."
-            val (best, s) = found[0]
-            val sb = StringBuilder()
-            val l = lab
-            if (l != null) {
-                val gen = l.generateFor(best.id)
-                sb.append("🧠 [").append(l.gpt.step).append(" passos] ")
-                sb.append(if (gen.isEmpty()) "(ainda sem resposta)" else gen)
-                sb.append("\n🌳 ")
-            }
-            sb.append(tidy(best.content, 300))
-            sb.append("\n(confiança ").append((s * 100).toInt()).append("%)")
-            val rel = found.drop(1).filter { it.second >= 0.25f }
-            if (rel.isNotEmpty()) {
-                sb.append("\nVeja também: ")
-                sb.append(rel.joinToString(" | ") { tidy(it.first.content, 80) })
-            }
-            return sb.toString()
-        }
-        val newId = learn(text)
-        if (newId > 0) lab?.learnInBackground(newId)
-        val extra = if (lab != null) "\n🧠 treinando o transformer com isso em segundo plano…" else ""
-        if (found.isEmpty()) return "Aprendi! Assunto novo: abri um galho novo na árvore." + extra
-        val (best, s) = found[0]
-        return if (s >= MIN_SIM) "Aprendi! Encaixei sob: " + tidy(best.title, 60) + extra
-        else "Aprendi! Abri um galho novo (o mais parecido era: " + tidy(best.title, 60) + ")." + extra
-    }
-
     /** Remove carimbos de data/hora e corta em fim de frase ou de palavra. */
     fun tidy(s: String, max: Int): String {
         val t = s.replace(stamp, "").replace(Regex("\\s+"), " ").trim()
@@ -236,20 +160,5 @@ class Tree(private val db: Db, private val emb: Embedder) {
         val end = maxOf(cut.lastIndexOf(". "), cut.lastIndexOf("! "), cut.lastIndexOf("? "))
         if (end > max / 2) return cut.substring(0, end + 1)
         return cut.substring(0, cut.lastIndexOf(' ').coerceAtLeast(1)) + "…"
-    }
-
-    private fun chunk(raw: String, max: Int = 500): List<String> {
-        val out = mutableListOf<String>()
-        for (p in raw.split(Regex("\\n\\s*\\n"))) {
-            var s = p.trim().replace(Regex("\\s+"), " ")
-            while (s.length > max) {
-                var cut = s.lastIndexOf(". ", max)
-                cut = if (cut < 100) max else cut + 1
-                out.add(s.substring(0, cut).trim())
-                s = s.substring(cut).trim()
-            }
-            if (s.length > 20) out.add(s)
-        }
-        return out
     }
 }
