@@ -53,6 +53,7 @@ App Android nativo que (1) organiza conhecimento numa árvore, (2) usa modelo de
   - Semente: na primeira abertura a osmose recebe `assets/semente.txt` (~90 pequenos diálogos @u/@a em português) para já ter o que treinar. Só uma vez (`seeded` em `arvore_prefs`).
   - Mistura de especialistas (`ai/DynamicSuperAI.kt`: `Expert`, `Router`, `DynamicSuperAI`) agora serve a aba Prever como segunda opinião (`Forecaster.predictMoe`, janelas de 6 valores, exige 14 valores positivos). Em testes com séries sintéticas ela NÃO supera a tendência linear em séries simples; fica como comparação experimental.
   - Tamanho 50M removido (não cabe na memória do celular). Tamanhos: Mini, Médio, Grande.
+- [x] 8.1 Conversas no formato `Nome: fala` (linha vazia entre conversas): `Importer.isSpeakerChat/speakerDialogue/speakerBlocks` tiram os nomes; em cada conversa quem fala primeiro vira `@u` e os outros `@a`. Os nós da árvore usam só o texto das falas.
 - [ ] 8. Polimento: ícone, gráfico da série, busca por ramo, cache de atenção (KV) para responder mais rápido
 
 ## Arquivos

@@ -260,6 +260,16 @@ class Osmose(
             return "Absorvido: " + lines.count { it.isNotEmpty() } + " falas (+" + chars + " caracteres) e " + nodes +
                 " nós novos. A osmose treina sozinha com o app aberto."
         }
+        if (Importer.isSpeakerChat(raw)) {
+            // formato "Nome: fala": os nomes saem; só as falas entram no corpus e na árvore
+            val lines = Importer.speakerDialogue(raw)
+            if (lines.isEmpty()) return "Não achei conversas aproveitáveis nesse arquivo."
+            val chars = lab.addCorpus(lines)
+            if (chars == 0) return "O corpus está cheio (8 milhões de caracteres). Apague parte dele na aba Treino (Avançado)."
+            val nodes = tree.addRepresentatives(Importer.speakerBlocks(raw), 20)
+            return "Absorvido: " + lines.count { it.isNotEmpty() } + " falas (+" + chars + " caracteres, sem os nomes) e " + nodes +
+                " nós novos. A osmose treina sozinha com o app aberto."
+        }
         var blocks = Importer.massBlocks(raw, "")
         if (blocks.isEmpty() && raw.trim().length >= 3) {
             blocks = listOf(raw.trim().replace(Regex("\\s+"), " "))

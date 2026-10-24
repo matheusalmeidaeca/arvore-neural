@@ -148,4 +148,87 @@ object Importer {
         if (sb.isNotEmpty()) blocks.add(sb.toString())
         return blocks.filter { it.length >= 20 }
     }
+
+    // ------------------------------------------------------------------ conversas "Nome: fala"
+
+    private val speaker = Regex("^\\s*(\\p{L}[\\p{L}\\p{N} _.'-]{0,24}):\\s+(.+)$")
+
+    /** Arquivo de conversas no formato "Nome: fala", com linha vazia entre uma conversa e outra. */
+    fun isSpeakerChat(raw: String): Boolean {
+        var seen = 0
+        var hits = 0
+        val names = HashSet<String>()
+        for (l in raw.lineSequence()) {
+            val line = clean(l)
+            if (line.isBlank()) continue
+            seen++
+            val m = speaker.matchEntire(line)
+            if (m != null) {
+                hits++
+                names.add(m.groupValues[1].trim().lowercase())
+            }
+            if (seen >= 40) break
+        }
+        return seen >= 5 && hits * 10 >= seen * 7 && names.size >= 2
+    }
+
+    /** Conversas separadas por linha vazia; cada uma vira uma lista de falas (nome, texto), juntando falas seguidas da mesma pessoa. */
+    private fun speakerConversations(raw: String): List<List<Pair<String, String>>> {
+        val all = ArrayList<List<Pair<String, String>>>()
+        var cur = ArrayList<Pair<String, String>>()
+        fun close() {
+            if (cur.isNotEmpty()) all.add(cur)
+            cur = ArrayList()
+        }
+        for (l in raw.lineSequence()) {
+            val line = clean(l)
+            if (line.isBlank()) {
+                close()
+                continue
+            }
+            val m = speaker.matchEntire(line)
+            if (m != null) {
+                val name = m.groupValues[1].trim()
+                val txt = m.groupValues[2].trim()
+                if (cur.isNotEmpty() && cur.last().first == name) {
+                    cur[cur.size - 1] = name to (cur.last().second + " " + txt)
+                } else {
+                    cur.add(name to txt)
+                }
+            } else if (cur.isNotEmpty()) {
+                cur[cur.size - 1] = cur.last().first to (cur.last().second + " " + line.trim())
+            }
+        }
+        close()
+        return all
+    }
+
+    /** Diálogo sem nomes: em cada conversa, quem fala primeiro é "@u" e os outros são "@a". */
+    fun speakerDialogue(raw: String): List<String> {
+        val out = ArrayList<String>()
+        for (conv in speakerConversations(raw)) {
+            val turns = conv.filter { it.second.isNotBlank() && !isNoise(it.second) && !it.second.contains("http") }
+            if (turns.size < 2) continue
+            val first = turns[0].first
+            out.add("")
+            for ((name, txt) in turns) out.add((if (name == first) "@u " else "@a ") + clipTurn(txt))
+        }
+        return out
+    }
+
+    /** Textos sem nomes (uma conversa por bloco, até ~450 caracteres) para os nós da árvore. */
+    fun speakerBlocks(raw: String): List<String> {
+        val out = ArrayList<String>()
+        for (conv in speakerConversations(raw)) {
+            var t = conv.joinToString(" ") { it.second }.replace(Regex("\\s+"), " ").trim()
+            while (t.length > 450) {
+                var cut = t.lastIndexOf(' ', 450)
+                if (cut < 200) cut = 450
+                out.add(t.substring(0, cut).trim())
+                t = t.substring(cut).trim()
+            }
+            if (t.length >= 20) out.add(t)
+        }
+        return out
+    }
 }
