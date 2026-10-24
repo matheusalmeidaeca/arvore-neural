@@ -42,7 +42,7 @@ App Android nativo que (1) organiza conhecimento numa árvore, (2) usa modelo de
   - O texto de cada nó é o que o transformer aprende a reproduzir, condicionado ao galho (vetores dos ancestrais somados, até 8 níveis).
   - `exemplo_abecedario.txt` na raiz do zip: lista de exemplo para importar.
 - [x] 7.3 v7.3 — tamanhos de modelo e prompt de sistema:
-  - `Sizes` (MiniTransformer.kt): Mini ≈1M (c128, L4), Médio ≈5M (c256, L6, 4 threads), Grande ≈15M (c384, L8, 2 threads), 50M experimental (c640, L10, 1 thread). Cabeças de 32 dims; lr menor nos maiores (1e-3, 6e-4, 4e-4, 3e-4) com aquecimento de 100 passos. Escolha na aba Transformer (SizeCard); trocar grava `model_size` em `arvore_prefs`, fecha o app e recomeça os pesos (corpus, árvore e conversa ficam).
+  - `Sizes` (MiniTransformer.kt): Mini ≈1M (c128, L4), Médio ≈5M (c256, L6, 4 threads), Grande ≈15M (c384, L8, 2 threads); 50M foi removido na v8. Cabeças de 32 dims; lr menor nos maiores (1e-3, 6e-4, 4e-4, 3e-4) com aquecimento de 100 passos. Escolha na aba Transformer (SizeCard); trocar grava `model_size` em `arvore_prefs`, fecha o app e recomeça os pesos (corpus, árvore e conversa ficam).
   - Trava contra ciclo de falhas: `size_trying` marca a tentativa; se o app morrer por falta de memória, a próxima abertura volta ao Mini. OutOfMemoryError na construção também volta ao Mini. Manifest com `largeHeap`.
   - Memória estimada (floats x4 x (3 + threads) + atividades): Mini ~70 MB, Médio ~270 MB, Grande ~420 MB, 50M ~930 MB (provavelmente não cabe). FLOPs por passo (batch 4 x 192): 4,6 / 24 / 68 / 231 GFLOP.
   - Prompt de sistema: `Osmose.systemPrompt` (até 60 letras, padrão "Você é a Árvore..."), linha `@s ...` inserida no fluxo de treino antes de cada trecho de diálogo (`MiniLab.applySys`, o corpus guardado não muda) e no começo do prompt da resposta (`buildPrompt`). Trocar o prompt invalida o cache do corpus.
@@ -54,6 +54,11 @@ App Android nativo que (1) organiza conhecimento numa árvore, (2) usa modelo de
   - Mistura de especialistas (`ai/DynamicSuperAI.kt`: `Expert`, `Router`, `DynamicSuperAI`) agora serve a aba Prever como segunda opinião (`Forecaster.predictMoe`, janelas de 6 valores, exige 14 valores positivos). Em testes com séries sintéticas ela NÃO supera a tendência linear em séries simples; fica como comparação experimental.
   - Tamanho 50M removido (não cabe na memória do celular). Tamanhos: Mini, Médio, Grande.
 - [x] 8.1 Conversas no formato `Nome: fala` (linha vazia entre conversas): `Importer.isSpeakerChat/speakerDialogue/speakerBlocks` tiram os nomes; em cada conversa quem fala primeiro vira `@u` e os outros `@a`. Os nós da árvore usam só o texto das falas.
+- [x] 9.0 v9 — especialistas DENTRO do transformer (MoE no feed-forward):
+  - Cada camada tem até `ex` especialistas (Mini 4, Médio 2, Grande 1 = sem MoE). O especialista 0 é o feed-forward de sempre; os extras ficam no fim do vetor de pesos (`Layout.exW1/exB1/exW2/exB2`) e o roteador em `Layout.wr`. Começa com 1 ativo por camada (`MiniGpt.active`): o modelo é exatamente o da v8 e os pesos treinados são carregados sem perder nada (`load`, ramo `baseN`).
+  - Com k >= 2 ativos: o roteador escolhe UM especialista por posição (top-1); saída = k * prob * especialista(x), assim com probabilidades iguais o gate vale 1. Gradiente do roteador escrito à mão (`Work.moeFwd/moeBwd`); conferido contra gradiente numérico em Python (erro ~1e-7). O botão Autoteste agora testa também o modelo com especialistas.
+  - Crescer: `MiniGpt.grow` ativa +1 especialista em todas as camadas, copiando (com ruído de 2%) o mais usado e a linha do roteador dele. Automático em `MiniLab.maybeGrow`: a cada 1500 passos, se a perda (média móvel) melhorou menos de 2% e está acima de 0,8. Também pelo botão "Crescer agora" na aba Treino. Metadado do modelo guarda quantos especialistas estão ativos.
+  - Sem perda de balanceamento: um especialista pode acabar dominando.
 - [ ] 8. Polimento: ícone, gráfico da série, busca por ramo, cache de atenção (KV) para responder mais rápido
 
 ## Arquivos

@@ -427,7 +427,7 @@ fun TrainScreen(onChange: () -> Unit) {
     ) {
         Text(
             "Modelo: " + lab.gpt.lay.n + " parâmetros (" + lab.gpt.cfg.l + " camadas, " + lab.gpt.cfg.c + " dims, contexto " +
-                lab.gpt.cfg.t + "). Cada nó da árvore é um vetor dentro dele. A osmose treina sozinha; aqui você alimenta e acelera.",
+                lab.gpt.cfg.t + ", especialistas por camada: " + lab.expertsInfo() + "). Cada nó da árvore é um vetor dentro dele, e o feed-forward de cada camada é uma mistura de especialistas que nasce quando o aprendizado empaca. A osmose treina sozinha; aqui você alimenta e acelera.",
             style = MaterialTheme.typography.bodyMedium
         )
         OsmoseCard(Engine.osmose, onChange)
@@ -459,6 +459,9 @@ fun TrainScreen(onChange: () -> Unit) {
             Button(enabled = !ts.busy, onClick = { Engine.startTrain(2000) }) { Text("Treinar 2000") }
             Button(enabled = ts.training, onClick = { ts.stop.set(true) }) { Text("Parar") }
         }
+        Button(enabled = !ts.busy, onClick = {
+            Engine.scope.launch(Dispatchers.Default) { ts.status = lab.growNow() }
+        }) { Text("🌱 Crescer agora (+1 especialista por camada)") }
 
         SizeCard()
         BackupCard()

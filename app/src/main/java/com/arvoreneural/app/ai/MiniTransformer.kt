@@ -30,22 +30,24 @@ class MiniGptConfig(
     /** threads do treino: cada uma tem uma cópia do gradiente, então modelos grandes usam menos */
     val maxThreads: Int = 4,
     /** taxa de aprendizado: modelos maiores pedem passos menores */
-    val lr: Float = 1e-3f
+    val lr: Float = 1e-3f,
+    /** máximo de especialistas por camada (MoE no feed-forward). 1 = sem especialistas */
+    val ex: Int = 1
 )
 
 /** Tamanhos escolhíveis do modelo (v7.3). Cabeças de 32 dimensões em todos. */
 object Sizes {
     val names = listOf("Mini", "Médio", "Grande")
     val info = listOf(
-        "≈1M parâmetros, ~70 MB de memória",
-        "≈5M parâmetros, ~270 MB, passos ~5x mais lentos",
-        "≈15M parâmetros, ~420 MB, passos ~15x mais lentos"
+        "≈1M parâmetros (até 4 especialistas por camada), ~115 MB de memória",
+        "≈5M parâmetros (até 2 especialistas por camada), ~360 MB, passos ~5x mais lentos",
+        "≈15M parâmetros (sem especialistas), ~420 MB, passos ~15x mais lentos"
     )
 
     fun config(size: Int, v: Int): MiniGptConfig = when (size) {
-        1 -> MiniGptConfig(v = v, c = 256, h = 8, l = 6, maxThreads = 4, lr = 6e-4f)
+        1 -> MiniGptConfig(v = v, c = 256, h = 8, l = 6, maxThreads = 4, lr = 6e-4f, ex = 2)
         2 -> MiniGptConfig(v = v, c = 384, h = 12, l = 8, maxThreads = 2, lr = 4e-4f)
-        else -> MiniGptConfig(v = v)
+        else -> MiniGptConfig(v = v, ex = 4)
     }
 }
 
@@ -104,6 +106,22 @@ class Layout(cfg: MiniGptConfig) {
     val wout: Int
     val bout: Int
 
+    /** Especialistas extras (1..ex-1) de cada camada e o roteador. O especialista 0 é o w1/b1/w2/b2 de sempre. */
+    val exW1 = Array(nl) { IntArray(maxOf(0, cfg.ex - 1)) }
+    val exB1 = Array(nl) { IntArray(maxOf(0, cfg.ex - 1)) }
+    val exW2 = Array(nl) { IntArray(maxOf(0, cfg.ex - 1)) }
+    val exB2 = Array(nl) { IntArray(maxOf(0, cfg.ex - 1)) }
+    val wr = IntArray(nl)
+
+    /** Tamanho do layout sem especialistas (= o modelo salvo antes da v9). Os extras ficam no fim. */
+    var baseN = 0
+        private set
+
+    fun fw1(l: Int, e: Int): Int = if (e == 0) w1[l] else exW1[l][e - 1]
+    fun fb1(l: Int, e: Int): Int = if (e == 0) b1[l] else exB1[l][e - 1]
+    fun fw2(l: Int, e: Int): Int = if (e == 0) w2[l] else exW2[l][e - 1]
+    fun fb2(l: Int, e: Int): Int = if (e == 0) b2[l] else exB2[l][e - 1]
+
     init {
         for (i in 0 until nl) {
             ln1g[i] = alloc(c); ln1b[i] = alloc(c)
@@ -115,6 +133,14 @@ class Layout(cfg: MiniGptConfig) {
         }
         lnfg = alloc(c); lnfb = alloc(c)
         wout = alloc(cfg.v * c); bout = alloc(cfg.v)
+        baseN = n
+        for (i in 0 until nl) {
+            for (e in 1 until cfg.ex) {
+                exW1[i][e - 1] = alloc(4 * c * c); exB1[i][e - 1] = alloc(4 * c)
+                exW2[i][e - 1] = alloc(4 * c * c); exB2[i][e - 1] = alloc(c)
+            }
+            if (cfg.ex > 1) wr[i] = alloc(cfg.ex * c)
+        }
     }
 }
 
@@ -218,7 +244,7 @@ private fun lnBwd(
 }
 
 /** Memória de trabalho de uma sequência (uma por thread). */
-class Work(cfg: MiniGptConfig, private val lay: Layout) {
+class Work(cfg: MiniGptConfig, private val lay: Layout, private val active: IntArray) {
     private val T = cfg.t
     private val C = cfg.c
     private val NH = cfg.h
@@ -256,6 +282,125 @@ class Work(cfg: MiniGptConfig, private val lay: Layout) {
     private val dgl = FloatArray(T * 4 * C)
     private val dpTmp = FloatArray(T)
     private val ns = FloatArray(C)
+
+    // especialistas (MoE): escolha, peso (gate), probabilidades do roteador e saída do especialista antes do gate
+    private val EX = cfg.ex
+    private val sel = Array(L) { IntArray(T) }
+    private val gate = Array(L) { FloatArray(T) }
+    private val rp = Array(L) { FloatArray(T * EX) }
+    private val fo = Array(L) { FloatArray(if (EX > 1) T * C else 0) }
+    /** quantas vezes cada especialista foi escolhido (para copiar o mais usado ao crescer) */
+    val use = IntArray(L * EX)
+
+    /** Feed-forward com k especialistas: o roteador escolhe UM por posição; saída = k * prob * especialista(x). */
+    private fun moeFwd(w: FloatArray, l: Int, nn: Int, k: Int) {
+        val x = bn[l]
+        val f = f1[l]
+        val gg = gl[l]
+        val o = fo[l]
+        val r0 = lay.wr[l]
+        val pr = rp[l]
+        for (t in 0 until nn) {
+            val xo = t * C
+            var mx = -1e30f
+            for (j in 0 until k) {
+                var sc = 0f
+                val ro = r0 + j * C
+                for (i in 0 until C) sc += x[xo + i] * w[ro + i]
+                pr[t * EX + j] = sc
+                if (sc > mx) mx = sc
+            }
+            var sm = 0f
+            for (j in 0 until k) {
+                val e = exp(pr[t * EX + j] - mx)
+                pr[t * EX + j] = e
+                sm += e
+            }
+            var best = 0
+            var bp = -1f
+            for (j in 0 until k) {
+                pr[t * EX + j] /= sm
+                if (pr[t * EX + j] > bp) {
+                    bp = pr[t * EX + j]
+                    best = j
+                }
+            }
+            sel[l][t] = best
+            use[l * EX + best]++
+            val gt = k * bp
+            gate[l][t] = gt
+            val o1 = lay.fw1(l, best)
+            val b1o = lay.fb1(l, best)
+            val o2 = lay.fw2(l, best)
+            val b2o = lay.fb2(l, best)
+            for (h in 0 until 4 * C) {
+                var sc = w[b1o + h]
+                val wr = o1 + h * C
+                for (i in 0 until C) sc += x[xo + i] * w[wr + i]
+                f[t * 4 * C + h] = sc
+                gg[t * 4 * C + h] = gelu(sc)
+            }
+            for (oo in 0 until C) {
+                var sc = w[b2o + oo]
+                val wr = o2 + oo * 4 * C
+                for (h in 0 until 4 * C) sc += gg[t * 4 * C + h] * w[wr + h]
+                o[xo + oo] = sc
+                tmp[xo + oo] = sc * gt
+            }
+        }
+    }
+
+    /** Gradiente do feed-forward com especialistas. Usa dh; deixa dbn pronto (dbn é zerado aqui). */
+    private fun moeBwd(w: FloatArray, l: Int, nn: Int, k: Int) {
+        val x = bn[l]
+        val f = f1[l]
+        val gg = gl[l]
+        val o = fo[l]
+        val r0 = lay.wr[l]
+        val pr = rp[l]
+        Arrays.fill(dbn, 0f)
+        for (t in 0 until nn) {
+            val xo = t * C
+            val e = sel[l][t]
+            val gt = gate[l][t]
+            var dgate = 0f
+            for (oo in 0 until C) dgate += dh[xo + oo] * o[xo + oo]
+            val o1 = lay.fw1(l, e)
+            val b1o = lay.fb1(l, e)
+            val o2 = lay.fw2(l, e)
+            val b2o = lay.fb2(l, e)
+            val ho = t * 4 * C
+            for (h in 0 until 4 * C) dgl[ho + h] = 0f
+            for (oo in 0 until C) {
+                val dy = dh[xo + oo] * gt
+                g[b2o + oo] += dy
+                val wr = o2 + oo * 4 * C
+                for (h in 0 until 4 * C) {
+                    g[wr + h] += dy * gg[ho + h]
+                    dgl[ho + h] += dy * w[wr + h]
+                }
+            }
+            for (h in 0 until 4 * C) {
+                val d = dgl[ho + h] * geluGrad(f[ho + h])
+                g[b1o + h] += d
+                val wr = o1 + h * C
+                for (i in 0 until C) {
+                    g[wr + i] += d * x[xo + i]
+                    dbn[xo + i] += d * w[wr + i]
+                }
+            }
+            val dp = k * dgate
+            val ps = pr[t * EX + e]
+            for (j in 0 until k) {
+                val dl = dp * ps * ((if (j == e) 1f else 0f) - pr[t * EX + j])
+                val ro = r0 + j * C
+                for (i in 0 until C) {
+                    g[ro + i] += dl * x[xo + i]
+                    dbn[xo + i] += dl * w[ro + i]
+                }
+            }
+        }
+    }
 
     /** slots = caminho do nó na árvore: a soma dos vetores de galho condiciona todas as posições. */
     fun forward(w: FloatArray, x: IntArray, nn: Int, slots: IntArray) {
@@ -311,11 +456,16 @@ class Work(cfg: MiniGptConfig, private val lay: Layout) {
             val h1l = h1[l]
             for (i in 0 until nn * C) h1l[i] = h0[i] + tmp[i]
             lnFwd(h1l, nn, C, w, lay.ln2g[l], lay.ln2b[l], ln2x[l], ln2rs[l], bn[l])
-            linFwd(bn[l], nn, C, w, lay.w1[l], lay.b1[l], 4 * C, f1[l])
-            val f = f1[l]
-            val gg = gl[l]
-            for (i in 0 until nn * 4 * C) gg[i] = gelu(f[i])
-            linFwd(gg, nn, 4 * C, w, lay.w2[l], lay.b2[l], C, tmp)
+            val kx = active[l]
+            if (kx <= 1) {
+                linFwd(bn[l], nn, C, w, lay.w1[l], lay.b1[l], 4 * C, f1[l])
+                val f = f1[l]
+                val gg = gl[l]
+                for (i in 0 until nn * 4 * C) gg[i] = gelu(f[i])
+                linFwd(gg, nn, 4 * C, w, lay.w2[l], lay.b2[l], C, tmp)
+            } else {
+                moeFwd(w, l, nn, kx)
+            }
             val hn = hs[l + 1]
             for (i in 0 until nn * C) hn[i] = h1l[i] + tmp[i]
         }
@@ -365,12 +515,17 @@ class Work(cfg: MiniGptConfig, private val lay: Layout) {
         lnBwd(dz, nn, C, w, lay.lnfg, lay.lnfb, lnfx, lnfrs, g, dh)
         val sc = 1f / sqrt(D.toFloat())
         for (l in L - 1 downTo 0) {
-            Arrays.fill(dgl, 0f)
-            linBwd(gl[l], dh, nn, 4 * C, w, lay.w2[l], lay.b2[l], C, g, dgl)
-            val f = f1[l]
-            for (i in 0 until nn * 4 * C) dgl[i] *= geluGrad(f[i])
-            Arrays.fill(dbn, 0f)
-            linBwd(bn[l], dgl, nn, C, w, lay.w1[l], lay.b1[l], 4 * C, g, dbn)
+            val kx = active[l]
+            if (kx <= 1) {
+                Arrays.fill(dgl, 0f)
+                linBwd(gl[l], dh, nn, 4 * C, w, lay.w2[l], lay.b2[l], C, g, dgl)
+                val f = f1[l]
+                for (i in 0 until nn * 4 * C) dgl[i] *= geluGrad(f[i])
+                Arrays.fill(dbn, 0f)
+                linBwd(bn[l], dgl, nn, C, w, lay.w1[l], lay.b1[l], 4 * C, g, dbn)
+            } else {
+                moeBwd(w, l, nn, kx)
+            }
             System.arraycopy(dh, 0, dh1, 0, dh.size)
             lnBwd(dbn, nn, C, w, lay.ln2g[l], lay.ln2b[l], ln2x[l], ln2rs[l], g, dh1)
             Arrays.fill(dao, 0f)
@@ -436,7 +591,9 @@ class MiniGpt(val cfg: MiniGptConfig) {
 
     private val nThreads = max(1, min(cfg.maxThreads, Runtime.getRuntime().availableProcessors()))
     private val pool = Executors.newFixedThreadPool(nThreads) { r -> Thread(r).also { it.isDaemon = true } }
-    private val works = Array(nThreads) { Work(cfg, lay) }
+    /** especialistas ativos em cada camada (1 = feed-forward comum) */
+    val active = IntArray(cfg.l) { 1 }
+    private val works = Array(nThreads) { Work(cfg, lay, active) }
 
     init {
         initWeights(Random(1))
@@ -456,6 +613,7 @@ class MiniGpt(val cfg: MiniGptConfig) {
         fun ones(off: Int) {
             for (i in 0 until c) w[off + i] = 1f
         }
+        Arrays.fill(active, 1)
         val deep = 0.02f / sqrt(2f * cfg.l)
         normal(lay.tok, cfg.v * c, 0.02f)
         normal(lay.pos, cfg.t * c, 0.02f)
@@ -468,6 +626,56 @@ class MiniGpt(val cfg: MiniGptConfig) {
         }
         ones(lay.lnfg)
         normal(lay.wout, cfg.v * c, 0.02f)
+        // especialistas extras ficam dormindo (não contam) até o modelo crescer; aqui só têm valores pequenos
+        for (l in 0 until cfg.l) {
+            for (e in 1 until cfg.ex) {
+                normal(lay.fw1(l, e), 4 * c * c, 0.02f)
+                normal(lay.fw2(l, e), 4 * c * c, deep)
+            }
+            if (cfg.ex > 1) normal(lay.wr[l], cfg.ex * c, 0.02f)
+        }
+    }
+
+    fun canGrow(): Boolean = cfg.ex > 1 && active[0] < cfg.ex
+
+    /**
+     * Nasce um especialista novo em cada camada (chame com o modelo travado, entre dois passos).
+     * O novo é uma cópia (com ruído pequeno) do especialista mais usado da camada; a linha do roteador
+     * também é copiada da dele. Assim o modelo quase não muda no instante em que cresce.
+     */
+    fun grow(): Boolean {
+        if (!canGrow()) return false
+        val c = cfg.c
+        val rnd = Random(System.nanoTime())
+        val k = active[0]
+        for (l in 0 until cfg.l) {
+            var src = 0
+            var bestUse = -1
+            for (e in 0 until k) {
+                var u = 0
+                for (wk in works) u += wk.use[l * cfg.ex + e]
+                if (u > bestUse) {
+                    bestUse = u
+                    src = e
+                }
+            }
+            fun copy(from: Int, to: Int, size: Int) {
+                for (i in 0 until size) {
+                    val v = w[from + i]
+                    w[to + i] = v * (1f + 0.02f * rnd.nextGaussian().toFloat()) + 1e-4f * rnd.nextGaussian().toFloat()
+                    am[to + i] = 0f
+                    av[to + i] = 0f
+                }
+            }
+            copy(lay.fw1(l, src), lay.fw1(l, k), 4 * c * c)
+            copy(lay.fb1(l, src), lay.fb1(l, k), 4 * c)
+            copy(lay.fw2(l, src), lay.fw2(l, k), 4 * c * c)
+            copy(lay.fb2(l, src), lay.fb2(l, k), c)
+            copy(lay.wr[l] + src * c, lay.wr[l] + k * c, c)
+        }
+        for (wk in works) Arrays.fill(wk.use, 0)
+        for (l in 0 until cfg.l) active[l] = k + 1
+        return true
     }
 
     fun reset() = initWeights(Random(System.nanoTime()))
@@ -568,9 +776,10 @@ class MiniGpt(val cfg: MiniGptConfig) {
     }
 
     private fun meta(): ByteArray {
-        val bb = ByteBuffer.allocate(10 * 4)
+        val bb = ByteBuffer.allocate(10 * 4 + 4 * cfg.l)
         bb.putInt(1); bb.putInt(step); bb.putFloat(lastLoss); bb.putInt(lay.n)
         bb.putInt(cfg.v); bb.putInt(cfg.t); bb.putInt(cfg.c); bb.putInt(cfg.h); bb.putInt(cfg.l); bb.putInt(cfg.s)
+        for (l in 0 until cfg.l) bb.putInt(active[l])
         return bb.array()
     }
 
@@ -599,13 +808,27 @@ class MiniGpt(val cfg: MiniGptConfig) {
         val sl = bb.getInt()
         if (v != cfg.v || c != cfg.c || h != cfg.h || l != cfg.l || sl != cfg.s) return false
         if (t != cfg.t) return if (t < cfg.t) migrate(db, st, ls, n, t) else false
-        if (n != lay.n) return false
+        if (n != lay.n) {
+            // modelo salvo antes dos especialistas: o layout antigo é o começo do novo (extras ficam no fim)
+            if (cfg.ex > 1 && n == lay.baseN) {
+                val old = FloatArray(n)
+                if (!db.loadModelWeights(old)) return false
+                System.arraycopy(old, 0, w, 0, n)
+                step = st
+                lastLoss = ls
+                return true
+            }
+            return false
+        }
         if (!db.loadModelWeights(w)) {
             initWeights(Random(1))
             return false
         }
         step = st
         lastLoss = ls
+        if (mb.size >= 40 + 4 * cfg.l) {
+            for (i in 0 until cfg.l) active[i] = bb.getInt().coerceIn(1, cfg.ex)
+        }
         return true
     }
 
@@ -640,6 +863,39 @@ class MiniLab(private val db: Db, val size: Int = 0) {
 
     init {
         gpt.load(db)
+    }
+
+    private var emaLoss = Float.NaN
+    private var refLoss = Float.NaN
+    private var lastCheck = gpt.step
+
+    /** Especialistas por camada agora / no máximo deste tamanho. */
+    fun expertsInfo(): String = gpt.active[0].toString() + " de " + gpt.cfg.ex
+
+    /**
+     * Crescimento autônomo: a cada 1500 passos compara a média móvel da perda com a da checagem anterior.
+     * Se melhorou menos de 2% (platô) e a perda ainda está alta, nasce um especialista em cada camada.
+     */
+    private fun maybeGrow(loss: Float) {
+        emaLoss = if (emaLoss.isNaN()) loss else 0.98f * emaLoss + 0.02f * loss
+        if (!gpt.canGrow() || gpt.step - lastCheck < 1500) return
+        lastCheck = gpt.step
+        val before = refLoss
+        refLoss = emaLoss
+        val plateau = !before.isNaN() && emaLoss > before * 0.98f
+        if (plateau && emaLoss > 0.8f) growNow()
+    }
+
+    /** Faz nascer um especialista por camada agora. Devolve uma mensagem para mostrar. */
+    fun growNow(): String {
+        val ok = synchronized(lock) {
+            val g = gpt.grow()
+            if (g && !frozen) gpt.save(db)
+            g
+        }
+        refLoss = emaLoss
+        return if (ok) "Nasceu um especialista em cada camada: agora " + expertsInfo() + "."
+        else "Este tamanho de modelo já está no máximo de especialistas (" + expertsInfo() + ")."
     }
 
     private fun slotOf(id: Long): Int = (id % gpt.cfg.s).toInt()
@@ -804,6 +1060,7 @@ class MiniLab(private val db: Db, val size: Int = 0) {
             val loss = synchronized(lock) { gpt.trainBatch(seqs, lr) }
             i++
             onStep(i, loss)
+            maybeGrow(loss)
             if (i % 100 == 0 && !frozen) synchronized(lock) { gpt.save(db) }
         }
         if (saveAtEnd && !frozen) synchronized(lock) { gpt.save(db) }
@@ -841,14 +1098,13 @@ class MiniLab(private val db: Db, val size: Int = 0) {
     }
 }
 
-/** Compara o gradiente calculado à mão com o gradiente numérico, num modelo minúsculo (inclui vetores de galho). */
-fun miniSelfTest(): String {
-    val cfg = MiniGptConfig(v = 7, t = 6, c = 8, h = 2, l = 2, s = 5)
+/** Gradiente calculado à mão contra gradiente numérico num modelo minúsculo. Devolve o pior erro relativo. */
+private fun gradCheck(cfg: MiniGptConfig, active: IntArray, seed: Long): Float {
     val lay = Layout(cfg)
     val w = FloatArray(lay.n)
-    val rnd = Random(3)
+    val rnd = Random(seed)
     for (i in w.indices) w[i] = (rnd.nextGaussian() * 0.3).toFloat()
-    val wk = Work(cfg, lay)
+    val wk = Work(cfg, lay, active)
     val slots = intArrayOf(1, 3)
     var worst = 0f
     for (len in intArrayOf(6, 4)) {
@@ -857,8 +1113,12 @@ fun miniSelfTest(): String {
         Arrays.fill(wk.g, 0f)
         wk.trainSeq(w, x, y, len, 1f, slots)
         val ana = wk.g.copyOf()
-        for (k in 0 until 60) {
-            val i = if (k < 20) lay.node + rnd.nextInt(cfg.s * cfg.c) else rnd.nextInt(w.size)
+        for (k in 0 until 80) {
+            val i = when {
+                k < 20 -> lay.node + rnd.nextInt(cfg.s * cfg.c)
+                k < 45 && cfg.ex > 1 -> lay.wr[rnd.nextInt(cfg.l)] + rnd.nextInt(cfg.ex * cfg.c)
+                else -> rnd.nextInt(w.size)
+            }
             val old = w[i]
             val eps = 1e-2f
             w[i] = old + eps
@@ -871,7 +1131,15 @@ fun miniSelfTest(): String {
             if (err > worst) worst = err
         }
     }
-    val pct = "%.2f".format(worst * 100f)
-    return if (worst < 0.02f) "Autoteste OK: erro máximo do gradiente $pct% (modelo mini de ${lay.n} parâmetros)."
-    else "Autoteste FALHOU: erro máximo $pct%. Mande este resultado ao Claude."
+    return worst
+}
+
+/** Autoteste: modelo comum e modelo com especialistas (roteador incluído). */
+fun miniSelfTest(): String {
+    val a = gradCheck(MiniGptConfig(v = 7, t = 6, c = 8, h = 2, l = 2, s = 5), intArrayOf(1, 1), 3L)
+    val b = gradCheck(MiniGptConfig(v = 7, t = 6, c = 8, h = 2, l = 2, s = 5, ex = 3), intArrayOf(2, 3), 5L)
+    val pa = "%.2f".format(a * 100f)
+    val pb = "%.2f".format(b * 100f)
+    return if (a < 0.02f && b < 0.02f) "Autoteste OK: erro máximo do gradiente $pa% (comum) e $pb% (com especialistas)."
+    else "Autoteste FALHOU: comum $pa%, com especialistas $pb%. Mande este resultado ao Claude."
 }
