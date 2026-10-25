@@ -129,8 +129,8 @@ class MainActivity : ComponentActivity() {
 @Composable
 fun App() {
     var tab by remember { mutableIntStateOf(0) }
-    val labels = listOf("Conversa", "Treino", "Prever")
-    val icons = listOf("💬", "🌊", "📈")
+    val labels = listOf("Conversa", "Cérebro", "Treino", "Prever")
+    val icons = listOf("💬", "🧠", "🌊", "📈")
     Scaffold(
         bottomBar = {
             NavigationBar {
@@ -148,7 +148,8 @@ fun App() {
         Box(Modifier.padding(pad).padding(16.dp).fillMaxSize()) {
             when (tab) {
                 0 -> ChatScreen()
-                1 -> TrainScreen { Engine.version++ }
+                1 -> CerebroScreen()
+                2 -> TrainScreen { Engine.version++ }
                 else -> ForecastScreen(Engine.db)
             }
         }

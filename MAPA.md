@@ -3,6 +3,15 @@
 > Como retomar com o Claude: envie este arquivo no início de uma conversa nova e diga em qual etapa você está.
 
 
+## v11.1 (25/10/2026) — Cérebro: llama.cpp dentro do app (etapa 1 do "corpo")
+- **O que é:** nova aba **🧠 Cérebro**. Roda um modelo **GGUF** (ex.: Qwen) no próprio celular via llama.cpp (C++ compilado junto no APK). É um motor **separado** do Sayoto (o mini transformer continua igual, aba Conversa/Treino).
+- **Como usar:** aba Cérebro › Escolher GGUF (o arquivo é copiado para dentro do app, uma vez) › Carregar › conversar. "Liberar memória" descarrega. Contexto 2048 tokens, 4 threads, resposta até 400 tokens, temperatura 0,7.
+- **Arquivos novos:** `app/src/main/cpp/CMakeLists.txt` (baixa o llama.cpp no build, commit fixo `4ebdf2c7…` de 2 out 2026), `cpp/llm_jni.cpp` (ponte JNI), `ai/Cerebro.kt` (chamadas nativas), `CerebroState.kt` (estado, cópia do GGUF, prompt ChatML), `CerebroScreen.kt` (tela).
+- **Gancho para as próximas etapas:** a geração chama o Kotlin **a cada token** com o texto e a probabilidade (`TokenListener.onToken(bytes, prob)`; devolver false interrompe). É por aí que entram Volante (viés por 👍/✏️), Mãos (ferramentas no meio da resposta) e Sentidos/Memória.
+- **Build:** o workflow instala `cmake;3.22.1` e `ndk;27.0.12077973`; `app/build.gradle.kts` ganhou `externalNativeBuild` e `ndkVersion`. Flags ARM: `armv8.2-a+dotprod` (celulares de ~2018 em diante; se travar ao carregar, trocar por `armv8-a` em `-DGGML_CPU_ARM_ARCH` no gradle).
+- **Não verificado:** nada disto foi compilado pela IA. A API do llama.cpp muda com frequência; se o passo "Compilar APK" falhar, mandar as linhas `error:` / `* What went wrong:`.
+- **Limites:** prompt em ChatML com bloco `<think>` vazio (resposta direta); sem histórico salvo (a conversa do Cérebro some ao fechar o app); sem repetição-penalidade (modelos pequenos podem repetir frases).
+
 ## v11.0 (25/10/2026) — árvore de nós removida; correção treina os pesos
 - **Por quê:** a árvore respondia "Lembro disto: ..." por semelhança de palavras e a correção ✏️ virava um nó. Isso dava a impressão de que o modelo aprendia, mas a resposta vinha de um arquivo de textos, não dos pesos.
 - **Agora:** toda resposta é escrita pelo transformer (Sayoto). Se ele ainda não sabe, mostra o que os pesos produzem (e um aviso), sem recorrer a texto guardado.

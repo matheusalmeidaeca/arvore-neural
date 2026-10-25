@@ -18,6 +18,11 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.7'
+      - name: Instalar NDK e CMake
+        run: |
+          SDKM="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          yes | "$SDKM" --licenses > /dev/null || true
+          "$SDKM" "cmake;3.22.1" "ndk;27.0.12077973"
       - name: Preparar chave de assinatura
         env:
           KS_BASE64: ${{ secrets.KS_BASE64 }}

@@ -12,10 +12,27 @@ android {
         applicationId = "com.arvoreneural.app"
         minSdk = 26
         targetSdk = 34
-        versionCode = 16
-        versionName = "11.0"
+        versionCode = 17
+        versionName = "11.1"
         // Chaquopy exige abiFilters. Só arm64 (celulares atuais): deixa o APK bem menor.
         ndk { abiFilters += listOf("arm64-v8a") }
+        // llama.cpp (C++) compilado junto: ver app/src/main/cpp/CMakeLists.txt
+        externalNativeBuild {
+            cmake {
+                arguments += listOf(
+                    "-DANDROID_STL=c++_shared",
+                    "-DGGML_CPU_ARM_ARCH=armv8.2-a+dotprod"
+                )
+            }
+        }
+    }
+    // NDK e CMake instalados pelo workflow (passo "Instalar NDK e CMake").
+    ndkVersion = "27.0.12077973"
+    externalNativeBuild {
+        cmake {
+            path = file("src/main/cpp/CMakeLists.txt")
+            version = "3.22.1"
+        }
     }
     // Chave fixa: o workflow grava arvore.jks na raiz a partir dos Secrets do GitHub.
     // Sem a chave, o build cai na assinatura de depuração (e o APK não atualiza por cima do antigo).
