@@ -3,6 +3,14 @@
 > Como retomar com o Claude: envie este arquivo no início de uma conversa nova e diga em qual etapa você está.
 
 
+## v11.2 (25/10/2026) — Sayoto removido; o Cérebro (GGUF) fica sozinho
+- **Por quê:** o mini transformer (Sayoto) carregava pesos e treinava em segundo plano, competindo por memória com o GGUF. O app fechava quando o Qwen respondia.
+- **Removido:** `ai/MiniTransformer.kt`, `ai/Osmose.kt`, `ai/Importer.kt`, `ai/Embedder.kt`, `TrainService.kt` (serviço de treino), abas Conversa e Treino (incluindo o laboratório de scripts na tela), receber texto compartilhado (WhatsApp), backup pela tela, sementes e `exemplo_abecedario.txt`. Manifest sem serviço, sem permissões e sem filtro de compartilhar.
+- **Ficou:** aba 🧠 Cérebro, aba 📈 Prever (`Forecaster`, `DynamicSuperAI`), `data/Db.kt` (série de valores), `ScriptLab.kt` + `python/runner.py` + Chaquopy/NumPy + Rhino (sem tela por enquanto; serão as **Mãos** do cérebro).
+- **Engine.kt** agora só tem `db`, `ready`, `init` e `scope`. A `MainActivity` tem só as duas abas.
+- **Dados antigos:** o arquivo `arvore.db` ainda guarda os pesos/corpus do Sayoto (não são mais lidos). Ocupam espaço até o app ser desinstalado ou os dados limpos.
+- **Não verificado:** não compilado pela IA. Se ainda fechar ao responder, o suspeito seguinte é a instrução ARM (`armv8.2-a+dotprod` → trocar por `armv8-a` no `app/build.gradle.kts`).
+
 ## v11.1 (25/10/2026) — Cérebro: llama.cpp dentro do app (etapa 1 do "corpo")
 - **O que é:** nova aba **🧠 Cérebro**. Roda um modelo **GGUF** (ex.: Qwen) no próprio celular via llama.cpp (C++ compilado junto no APK). É um motor **separado** do Sayoto (o mini transformer continua igual, aba Conversa/Treino).
 - **Como usar:** aba Cérebro › Escolher GGUF (o arquivo é copiado para dentro do app, uma vez) › Carregar › conversar. "Liberar memória" descarrega. Contexto 2048 tokens, 4 threads, resposta até 400 tokens, temperatura 0,7.
