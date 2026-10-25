@@ -12,8 +12,8 @@ android {
         applicationId = "com.arvoreneural.app"
         minSdk = 26
         targetSdk = 34
-        versionCode = 13
-        versionName = "10.3"
+        versionCode = 14
+        versionName = "10.4"
         // Chaquopy exige abiFilters. Só arm64 (celulares atuais): deixa o APK bem menor.
         ndk { abiFilters += listOf("arm64-v8a") }
     }

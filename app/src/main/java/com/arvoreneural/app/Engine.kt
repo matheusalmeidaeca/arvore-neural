@@ -50,6 +50,8 @@ object Engine {
     val msgs = mutableStateListOf<Msg>()
     var liked by mutableStateOf(setOf<Int>())
     var pending by mutableIntStateOf(0)
+    var correcting by mutableIntStateOf(-1)
+    var correctText by mutableStateOf("")
     var version by mutableIntStateOf(0)
     val ts = TState()
 
@@ -199,6 +201,12 @@ object Engine {
         msgs.clear()
         liked = emptySet()
         scope.launch(Dispatchers.IO) { db.clearChat() }
+    }
+
+    fun correct(idx: Int, right: String) {
+        liked = liked + idx
+        val snap = msgs.map { it.fromUser to it.text }
+        scope.launch(Dispatchers.IO) { osmose.correct(snap, idx, right) }
     }
 
     fun like(idx: Int) {

@@ -179,7 +179,7 @@ fun ChatScreen() {
         ) {
             if (msgs.isEmpty()) {
                 item {
-                    Text("Converse comigo! Eu respondo com o que já aprendi e continuo aprendendo com tudo que você escreve (osmose). Toque em 👍 nas respostas boas.")
+                    Text("Converse comigo! Eu respondo com o que já aprendi e continuo aprendendo com tudo que você escreve (osmose). Toque em 👍 nas respostas boas e em ✏️ para corrigir as erradas.")
                 }
             }
             items(msgs.size) { idx ->
@@ -195,8 +195,14 @@ fun ChatScreen() {
                         modifier = Modifier.widthIn(max = 300.dp)
                     ) { Text(m.text, Modifier.padding(10.dp)) }
                     if (!m.fromUser && idx > 0) {
-                        TextButton(onClick = { Engine.like(idx) }) {
-                            Text(if (idx in Engine.liked) "✓ guardado" else "👍 gostei")
+                        Row {
+                            TextButton(onClick = { Engine.like(idx) }) {
+                                Text(if (idx in Engine.liked) "✓ guardado" else "👍 gostei")
+                            }
+                            TextButton(onClick = {
+                                Engine.correctText = ""
+                                Engine.correcting = idx
+                            }) { Text("✏️ corrigir") }
                         }
                     }
                 }
@@ -204,6 +210,27 @@ fun ChatScreen() {
             if (Engine.pending > 0) {
                 item { Text("✍️ pensando…", style = MaterialTheme.typography.bodySmall) }
             }
+        }
+        if (Engine.correcting >= 0) {
+            AlertDialog(
+                onDismissRequest = { Engine.correcting = -1 },
+                title = { Text("Qual seria a resposta certa?") },
+                text = {
+                    OutlinedTextField(
+                        value = Engine.correctText,
+                        onValueChange = { Engine.correctText = it },
+                        placeholder = { Text("Resposta certa") }
+                    )
+                },
+                confirmButton = {
+                    TextButton(onClick = {
+                        val t = Engine.correctText.trim()
+                        if (t.isNotEmpty()) Engine.correct(Engine.correcting, t)
+                        Engine.correcting = -1
+                    }) { Text("Ensinar") }
+                },
+                dismissButton = { TextButton(onClick = { Engine.correcting = -1 }) { Text("Cancelar") } }
+            )
         }
         Row(Modifier.fillMaxWidth().padding(top = 8.dp), verticalAlignment = Alignment.CenterVertically) {
             OutlinedTextField(

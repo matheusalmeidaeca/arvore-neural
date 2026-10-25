@@ -413,6 +413,30 @@ class Osmose(
         return sb.toString()
     }
 
+    /**
+     * ✏️: o usuário diz qual seria a resposta certa. history[index] é a resposta errada da IA e a pergunta é a
+     * mensagem do usuário logo antes. A correção pesa mais que o 👍 (5 cópias no treino) e vira um nó da árvore,
+     * então uma pergunta parecida já é respondida certo na hora, sem esperar o treino.
+     */
+    fun correct(history: List<Pair<Boolean, String>>, index: Int, right: String): String {
+        if (index <= 0 || index >= history.size || history[index].first) return ""
+        if (!history[index - 1].first) return ""
+        val q = firstLine(history[index - 1].second) ?: return ""
+        val a = firstLine(right) ?: return ""
+        val qc = clip(q, 100)
+        val ac = clip(a, 160)
+        val blocks = ArrayList<String>()
+        repeat(5) {
+            blocks.add("")
+            blocks.add(TU + qc)
+            blocks.add(TA + ac)
+        }
+        lab.addCorpus(blocks)
+        val id = tree.learn(qc + " — " + ac)
+        if (id > 0) lab.learnInBackground(id, 24)
+        return "Corrigido."
+    }
+
     /** 👍: guarda este trecho do diálogo (3 cópias, para pesar mais no treino). history[index] é a resposta da IA. */
     fun like(history: List<Pair<Boolean, String>>, index: Int): String {
         if (index <= 0 || index >= history.size || history[index].first) return ""
