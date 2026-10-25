@@ -1338,20 +1338,8 @@ class MiniLab(private val db: Db, val size: Int = 0) {
         return out.toIntArray()
     }
 
-    private fun docs(): List<Doc> {
-        val nodes = db.allNodes()
-        val byId = HashMap<Long, Node>()
-        for (n in nodes) byId[n.id] = n
-        val out = ArrayList<Doc>()
-        for (n in nodes) {
-            val enc = Vocab.encode(n.content)
-            if (enc.isEmpty()) continue
-            val ids = IntArray(enc.size + 2)
-            System.arraycopy(enc, 0, ids, 1, enc.size)
-            out.add(Doc(n.id, pathSlots(byId, n.id), ids))
-        }
-        return out
-    }
+    /** v11: a árvore de nós foi removida. Só o corpus treina o modelo (a lista de documentos fica sempre vazia). */
+    private fun docs(): List<Doc> = ArrayList()
 
     fun corpusSize(): Int {
         var total = db.corpusChars()
@@ -1522,14 +1510,61 @@ class MiniLab(private val db: Db, val size: Int = 0) {
         }
     }
 
+    /**
+     * ✏️ Correção: treina os PESOS até o modelo dar alta probabilidade à resposta certa (a mesma medição da nota:
+     * probabilidade média por letra da resposta). Cada passo mistura a correção com trechos do corpus, para o modelo
+     * não esquecer o resto. Devolve [antes, depois, passos] (probabilidades de 0 a 1) ou null se não couber no contexto.
+     */
+    fun fitCorrection(q: String, a: String, maxSteps: Int = 60): FloatArray? {
+        val t = gpt.cfg.t
+        val pre = Vocab.encode(sysLine() + "@u " + q + "\n@a ")
+        val ans = Vocab.encode(a + "\n")
+        if (pre.isEmpty() || ans.isEmpty() || ans.size >= t) return null
+        val total = 1 + pre.size + ans.size
+        val ids = IntArray(total)
+        System.arraycopy(pre, 0, ids, 1, pre.size)
+        System.arraycopy(ans, 0, ids, 1 + pre.size, ans.size)
+        val from = maxOf(0, total - (t + 1))
+        val sq = ids.copyOfRange(from, total)
+        val x = sq.copyOfRange(0, sq.size - 1)
+        val y = sq.copyOfRange(1, sq.size)
+        val none = IntArray(0)
+        val pl = sq.size - ans.size
+        fun prob(): Float {
+            var full = 0f
+            var pref = 0f
+            synchronized(lock) {
+                full = gpt.lossOf(x, y, none)
+                pref = if (pl - 1 >= 1) gpt.lossOf(sq.copyOfRange(0, pl - 1), sq.copyOfRange(1, pl), none) else 0f
+            }
+            return exp(-(full - pref) / ans.size.toFloat())
+        }
+        val corp = corpusTokens()
+        val rnd = Random(System.nanoTime())
+        val before = prob()
+        var n = 0
+        while (n < maxSteps && !frozen) {
+            val seqs = ArrayList<Seq>()
+            for (k in 0 until 6) seqs.add(Seq(none, x, y))
+            if (corp.size > t + 2) seqs.addAll(sample(ArrayList(), corp, null, 2, rnd))
+            val lr = gpt.cfg.lr * minOf(1f, (gpt.step + 1) / 100f)
+            synchronized(lock) { gpt.trainBatch(seqs, lr) }
+            n++
+            if (n >= 4 && n % 2 == 0 && prob() >= 0.7f) break
+        }
+        val after = prob()
+        saveNow()
+        return floatArrayOf(before, after, n.toFloat())
+    }
+
     /** Resposta de conversa: o prompt é o diálogo recente ("@u ...\n@a "); o galho da árvore condiciona o modelo. */
-    fun generateChat(nodeId: Long, prompt: String, maxNew: Int = 90): String {
+    fun generateChat(nodeId: Long, prompt: String, maxNew: Int = 90, temp: Float = 0.7f): String {
         val slots = if (nodeId > 0) {
             val byId = HashMap<Long, Node>()
             for (n in db.allNodes()) byId[n.id] = n
             pathSlots(byId, nodeId)
         } else IntArray(0)
-        return synchronized(lock) { gpt.generate(slots, prompt, maxNew, 0.7f, Random(), true) }.trim()
+        return synchronized(lock) { gpt.generate(slots, prompt, maxNew, temp, Random(), true) }.trim()
     }
 
     fun generateFree(prompt: String, maxNew: Int): String =

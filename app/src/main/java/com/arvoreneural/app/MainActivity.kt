@@ -60,12 +60,10 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import com.arvoreneural.app.ai.Forecaster
-import com.arvoreneural.app.ai.HashEmbedder
 import com.arvoreneural.app.ai.MiniLab
 import com.arvoreneural.app.ai.Osmose
 import com.arvoreneural.app.ai.Sizes
 import com.arvoreneural.app.ai.miniSelfTest
-import com.arvoreneural.app.ai.Tree
 import com.arvoreneural.app.data.Db
 import com.arvoreneural.app.data.Node
 import kotlinx.coroutines.Dispatchers
@@ -131,8 +129,8 @@ class MainActivity : ComponentActivity() {
 @Composable
 fun App() {
     var tab by remember { mutableIntStateOf(0) }
-    val labels = listOf("Conversa", "Árvore", "Treino", "Prever")
-    val icons = listOf("💬", "🌳", "🌊", "📈")
+    val labels = listOf("Conversa", "Treino", "Prever")
+    val icons = listOf("💬", "🌊", "📈")
     Scaffold(
         bottomBar = {
             NavigationBar {
@@ -150,8 +148,7 @@ fun App() {
         Box(Modifier.padding(pad).padding(16.dp).fillMaxSize()) {
             when (tab) {
                 0 -> ChatScreen()
-                1 -> TreeScreen(Engine.db, Engine.tree, Engine.version) { Engine.version++ }
-                2 -> TrainScreen { Engine.version++ }
+                1 -> TrainScreen { Engine.version++ }
                 else -> ForecastScreen(Engine.db)
             }
         }
@@ -179,7 +176,7 @@ fun ChatScreen() {
         ) {
             if (msgs.isEmpty()) {
                 item {
-                    Text("Converse comigo! Eu respondo com o que já aprendi e continuo aprendendo com tudo que você escreve (osmose). Toque em 👍 nas respostas boas e em ✏️ para corrigir as erradas.")
+                    Text("Converse comigo! Eu respondo só com o que está nos meus pesos (não existe arquivo de textos por trás). Aprendo com tudo que você escreve (osmose). Toque em 👍 nas respostas boas e em ✏️ para corrigir: a correção treina os pesos na hora e eu mostro quanto a chance da resposta certa subiu.")
                 }
             }
             items(msgs.size) { idx ->
@@ -232,6 +229,13 @@ fun ChatScreen() {
                 dismissButton = { TextButton(onClick = { Engine.correcting = -1 }) { Text("Cancelar") } }
             )
         }
+        if (Engine.notice.isNotEmpty()) {
+            Surface(
+                color = MaterialTheme.colorScheme.tertiaryContainer,
+                shape = RoundedCornerShape(12.dp),
+                modifier = Modifier.fillMaxWidth().padding(top = 8.dp)
+            ) { Text(Engine.notice, Modifier.padding(10.dp), style = MaterialTheme.typography.bodySmall) }
+        }
         Row(Modifier.fillMaxWidth().padding(top = 8.dp), verticalAlignment = Alignment.CenterVertically) {
             OutlinedTextField(
                 value = Engine.chatInput,
@@ -251,190 +255,6 @@ fun ChatScreen() {
     }
 }
 
-fun flatten(nodes: List<Node>): List<Pair<Node, Int>> {
-    val byParent = nodes.groupBy { it.parentId }
-    val out = mutableListOf<Pair<Node, Int>>()
-    fun walk(pid: Long, d: Int) {
-        byParent[pid]?.forEach {
-            out.add(it to d)
-            walk(it.id, d + 1)
-        }
-    }
-    walk(0L, 0)
-    return out
-}
-
-@Composable
-fun TreeScreen(db: Db, tree: Tree, version: Int, onChange: () -> Unit) {
-    val ctx = LocalContext.current
-    var nodes by remember { mutableStateOf(listOf<Node>()) }
-    var q by remember { mutableStateOf("") }
-    var answers by remember { mutableStateOf(listOf<Pair<Node, Float>>()) }
-    var editing by remember { mutableStateOf<Node?>(null) }
-    var editText by remember { mutableStateOf("") }
-    var addParent by remember { mutableStateOf(-1L) }
-    var addText by remember { mutableStateOf("") }
-    var showImport by remember { mutableStateOf(false) }
-    var impText by remember { mutableStateOf("") }
-    var impPaths by remember { mutableStateOf(true) }
-    val scope = rememberCoroutineScope()
-    LaunchedEffect(version) { nodes = withContext(Dispatchers.IO) { db.allNodes() } }
-    val flat = remember(nodes) { flatten(nodes) }
-    val filePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? ->
-        if (uri != null) {
-            val app = ctx.applicationContext
-            Engine.scope.launch(Dispatchers.IO) {
-                impText = try {
-                    app.contentResolver.openInputStream(uri)?.bufferedReader()?.readText() ?: ""
-                } catch (e: Throwable) {
-                    ""
-                }
-            }
-        }
-    }
-
-    val ed = editing
-    if (ed != null) {
-        AlertDialog(
-            onDismissRequest = { editing = null },
-            title = { Text("Editar nó") },
-            text = {
-                OutlinedTextField(
-                    value = editText,
-                    onValueChange = { editText = it },
-                    modifier = Modifier.fillMaxWidth().heightIn(min = 100.dp)
-                )
-            },
-            confirmButton = {
-                TextButton(onClick = {
-                    val id = ed.id
-                    val t = editText
-                    editing = null
-                    Engine.scope.launch(Dispatchers.IO) {
-                        tree.editNode(id, t)
-                        Engine.treeMsg = "Nó editado."
-                        onChange()
-                    }
-                }) { Text("Salvar") }
-            },
-            dismissButton = { TextButton(onClick = { editing = null }) { Text("Cancelar") } }
-        )
-    }
-    if (addParent >= 0L) {
-        AlertDialog(
-            onDismissRequest = { addParent = -1L },
-            title = { Text(if (addParent == 0L) "Novo nó raiz" else "Novo nó filho") },
-            text = {
-                OutlinedTextField(
-                    value = addText,
-                    onValueChange = { addText = it },
-                    modifier = Modifier.fillMaxWidth().heightIn(min = 100.dp)
-                )
-            },
-            confirmButton = {
-                TextButton(onClick = {
-                    val pid = addParent
-                    val t = addText
-                    addParent = -1L
-                    addText = ""
-                    Engine.scope.launch(Dispatchers.IO) {
-                        val id = tree.addNode(pid, t)
-                        Engine.treeMsg = if (id > 0) "Nó criado." else "Escreva algo para criar o nó."
-                        onChange()
-                    }
-                }) { Text("Criar") }
-            },
-            dismissButton = { TextButton(onClick = { addParent = -1L }) { Text("Cancelar") } }
-        )
-    }
-    if (showImport) {
-        AlertDialog(
-            onDismissRequest = { showImport = false },
-            title = { Text("Importar lista indentada") },
-            text = {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text(
-                        "Um nó por linha. Cada _ no começo é um nível: B, _Br, __Bra. Cole aqui ou escolha um .txt.",
-                        style = MaterialTheme.typography.bodySmall
-                    )
-                    OutlinedTextField(
-                        value = impText,
-                        onValueChange = { impText = it },
-                        modifier = Modifier.fillMaxWidth().heightIn(min = 160.dp)
-                    )
-                    TextButton(onClick = { filePicker.launch(arrayOf("text/*")) }) { Text("Escolher arquivo .txt") }
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Switch(checked = impPaths, onCheckedChange = { impPaths = it })
-                        Spacer(Modifier.width(8.dp))
-                        Text("Treinar também com os caminhos (B > Br > Bra)", style = MaterialTheme.typography.bodySmall)
-                    }
-                }
-            },
-            confirmButton = {
-                TextButton(onClick = {
-                    val raw = impText
-                    val withPaths = impPaths
-                    showImport = false
-                    impText = ""
-                    Engine.treeMsg = "Importando…"
-                    Engine.scope.launch(Dispatchers.IO) {
-                        Engine.treeMsg = try {
-                            tree.importOutline(raw, withPaths)
-                        } catch (e: Throwable) {
-                            "Erro ao importar: " + (e.message ?: "")
-                        }
-                        onChange()
-                    }
-                }) { Text("Importar") }
-            },
-            dismissButton = { TextButton(onClick = { showImport = false }) { Text("Cancelar") } }
-        )
-    }
-
-    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        OutlinedTextField(
-            value = q,
-            onValueChange = { q = it },
-            label = { Text("Pergunte à árvore") },
-            modifier = Modifier.fillMaxWidth()
-        )
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Button(onClick = {
-                scope.launch { answers = withContext(Dispatchers.IO) { tree.ask(q) } }
-            }) { Text("Buscar") }
-            Button(onClick = { addText = ""; addParent = 0L }) { Text("+ Raiz") }
-            Button(onClick = { showImport = true }) { Text("Importar lista") }
-        }
-        if (Engine.treeMsg.isNotEmpty()) Text(Engine.treeMsg, style = MaterialTheme.typography.bodySmall)
-        if (answers.isNotEmpty()) {
-            Text("Mais parecidos:", style = MaterialTheme.typography.titleSmall)
-            answers.forEach { (n, s) -> Text("• ${n.content.take(140)} (${(s * 100).toInt()}%)") }
-        }
-        Text("${nodes.size} nós na árvore. Toque no texto para editar, + para filho, ✕ para apagar.", style = MaterialTheme.typography.titleSmall)
-        LazyColumn {
-            items(flat) { (n, d) ->
-                Row(
-                    Modifier.fillMaxWidth().padding(start = (minOf(d, 10) * 16).dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    TextButton(
-                        onClick = { editText = n.content; editing = n },
-                        modifier = Modifier.weight(1f)
-                    ) { Text(n.title, modifier = Modifier.fillMaxWidth()) }
-                    TextButton(onClick = { addText = ""; addParent = n.id }) { Text("+") }
-                    TextButton(onClick = {
-                        scope.launch {
-                            withContext(Dispatchers.IO) { db.deleteNode(n.id) }
-                            onChange()
-                        }
-                    }) { Text("✕") }
-                }
-            }
-        }
-    }
-}
-
-/** Treino: tudo que alimenta e treina o modelo, numa tela só (osmose, texto, treino manual, tamanho, backup, avançado). */
 @Composable
 fun TrainScreen(onChange: () -> Unit) {
     val ts = Engine.ts
@@ -455,7 +275,7 @@ fun TrainScreen(onChange: () -> Unit) {
     ) {
         Text(
             "Modelo: " + lab.gpt.lay.n + " parâmetros (" + lab.gpt.cfg.l + " camadas, " + lab.gpt.cfg.c + " dims, contexto " +
-                lab.gpt.cfg.t + ", especialistas por camada: " + lab.expertsInfo() + "). Cada nó da árvore é um vetor dentro dele, e o feed-forward de cada camada é uma mistura de especialistas que dobra de número quando o aprendizado empaca, sem teto fixo (o limite é a memória do celular). A osmose treina sozinha; aqui você alimenta e acelera.",
+                lab.gpt.cfg.t + ", especialistas por camada: " + lab.expertsInfo() + "). O feed-forward de cada camada é uma mistura de especialistas que dobra de número quando o aprendizado empaca, sem teto fixo (o limite é a memória do celular). A osmose treina sozinha; aqui você alimenta e acelera.",
             style = MaterialTheme.typography.bodyMedium
         )
         OsmoseCard(Engine.osmose, onChange)
@@ -509,32 +329,6 @@ fun TrainScreen(onChange: () -> Unit) {
             Engine.scope.launch(Dispatchers.Default) { ts.status = lab.growNow() }
         }) { Text("🌱 Crescer agora (dobra os especialistas)") }
 
-        Text("🌳 Cuidar da árvore", style = MaterialTheme.typography.titleMedium)
-        Button(onClick = {
-            Engine.scope.launch(Dispatchers.IO) {
-                ts.status = try {
-                    Engine.tree.consolidate(false, 0L)
-                } catch (e: Throwable) {
-                    "Erro ao arrumar a árvore."
-                }
-                onChange()
-            }
-        }) { Text("🧹 Juntar nós parecidos") }
-        TextButton(onClick = {
-            if (!confirmPrune) {
-                confirmPrune = true
-            } else {
-                confirmPrune = false
-                Engine.scope.launch(Dispatchers.IO) {
-                    ts.status = try {
-                        Engine.tree.consolidate(true, Engine.osmose.hitsSince())
-                    } catch (e: Throwable) {
-                        "Erro ao arrumar a árvore."
-                    }
-                    onChange()
-                }
-            }
-        }) { Text(if (confirmPrune) "Toque de novo para confirmar" else "Apagar nós nunca usados (60+ dias)") }
 
         SizeCard()
         BackupCard()
@@ -639,11 +433,11 @@ fun TrainScreen(onChange: () -> Unit) {
                 confirmClear = false
                 Engine.scope.launch(Dispatchers.IO) {
                     Engine.db.clearNodes()
-                    Engine.osmoseMsg = "Árvore apagada"
+                    Engine.osmoseMsg = "Nós antigos apagados"
                     onChange()
                 }
             }
-        }) { Text(if (confirmClear) "Toque de novo para confirmar" else "Apagar toda a árvore") }
+        }) { Text(if (confirmClear) "Toque de novo para confirmar" else "Apagar nós antigos (a árvore não é mais usada)") }
     }
 }
 
@@ -759,7 +553,7 @@ fun BackupCard() {
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Text("💾 Backup", style = MaterialTheme.typography.titleMedium)
         Text(
-            "Guarda num arquivo tudo que o app aprendeu (pesos, corpus, árvore, conversa). Faça antes de desinstalar ou trocar de celular.",
+            "Guarda num arquivo tudo que o app aprendeu (pesos, corpus, conversa). Faça antes de desinstalar ou trocar de celular.",
             style = MaterialTheme.typography.bodySmall
         )
         Button(onClick = { save.launch("arvore-backup.db") }) { Text("Salvar backup") }
@@ -840,7 +634,7 @@ fun SizeCard() {
     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
         Text("📏 Tamanho do modelo", style = MaterialTheme.typography.titleMedium)
         Text(
-            "Trocar o tamanho recomeça o treino do modelo (corpus, árvore e conversa ficam). Modelos maiores treinam bem mais devagar e precisam de mais texto. Faça um backup antes (logo abaixo).",
+            "Trocar o tamanho recomeça o treino do modelo (corpus e conversa ficam). Modelos maiores treinam bem mais devagar e precisam de mais texto. Faça um backup antes (logo abaixo).",
             style = MaterialTheme.typography.bodySmall
         )
         for (i in Sizes.names.indices) {

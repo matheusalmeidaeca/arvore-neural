@@ -11,8 +11,6 @@ import java.util.concurrent.atomic.AtomicInteger
 
 private const val TU = "@u "
 private const val TA = "@a "
-/** A partir desta semelhança, uma pergunta é respondida direto pela árvore. */
-private const val DIRECT_SIM = 0.5f
 private const val DEFAULT_SYS = "Você é a Árvore: uma IA pequena, curiosa e gentil."
 
 /**
@@ -25,7 +23,6 @@ private const val DEFAULT_SYS = "Você é a Árvore: uma IA pequena, curiosa e g
 class Osmose(
     private val ctx: Context,
     private val db: Db,
-    private val tree: Tree,
     private val lab: MiniLab
 ) {
     private val prefs = ctx.getSharedPreferences("arvore_prefs", Context.MODE_PRIVATE)
@@ -168,7 +165,7 @@ class Osmose(
                     why = "treino manual em andamento"
                 } else if (!canTrain()) {
                     // canTrain já preencheu o motivo
-                } else if (db.corpusChars() < 200 && db.nodeCount() == 0) {
+                } else if (db.corpusChars() < 200) {
                     why = "nada para aprender ainda (converse, ensine ou importe uma conversa)"
                 } else if (lab.overfitting()) {
                     why = "parou para não decorar (o erro em texto novo subiu). Traga mais texto."
@@ -232,7 +229,7 @@ class Osmose(
             else -> "🌊 Osmose ligada"
         }
         return st + "\npassos " + g.step + " | perda " + loss + " | corpus " + db.corpusChars() +
-            " caracteres | nós " + db.nodeCount() + "\n" + lab.healthInfo()
+            " caracteres\n" + lab.healthInfo()
     }
 
     // ------------------------------------------------------------------ semente
@@ -248,9 +245,6 @@ class Osmose(
                     if (db.corpusChars() < 200) {
                         val lines = ctx.assets.open("semente.txt").bufferedReader().use { it.readLines() }
                         lab.addCorpus(lines)
-                        tree.addRepresentatives(
-                            lines.filter { it.startsWith(TA) && it.length > 40 }.map { it.removePrefix(TA) }, 6
-                        )
                     }
                     prefs.edit().putBoolean("seeded", true).apply()
                 }
@@ -258,9 +252,6 @@ class Osmose(
                 if (!prefs.getBoolean("seeded2", false)) {
                     val lines = ctx.assets.open("semente2.txt").bufferedReader().use { it.readLines() }
                     lab.addCorpus(lines)
-                    tree.addRepresentatives(
-                        lines.filter { it.startsWith(TA) && it.length > 40 }.map { it.removePrefix(TA) }, 6
-                    )
                     prefs.edit().putBoolean("seeded2", true).apply()
                 }
                 if (prefs.getLong("hits_since", 0L) == 0L) {
@@ -379,9 +370,8 @@ class Osmose(
             }
             val chars = lab.addCorpus(lines)
             if (chars == 0) return "O corpus está cheio (8 milhões de caracteres). Apague parte dele na aba Treino (Avançado)."
-            val nodes = tree.addRepresentatives(Importer.whatsappBlocks(raw, me), 20)
-            return "Absorvido: " + lines.count { it.isNotEmpty() } + " falas (+" + chars + " caracteres) e " + nodes +
-                " nós novos. A osmose treina sozinha com o app aberto."
+            return "Absorvido: " + lines.count { it.isNotEmpty() } + " falas (+" + chars +
+                " caracteres). A osmose treina os pesos sozinha com o app aberto."
         }
         if (Importer.isSpeakerChat(raw)) {
             // formato "Nome: fala": os nomes saem; só as falas entram no corpus e na árvore
@@ -389,9 +379,8 @@ class Osmose(
             if (lines.isEmpty()) return "Não achei conversas aproveitáveis nesse arquivo."
             val chars = lab.addCorpus(lines)
             if (chars == 0) return "O corpus está cheio (8 milhões de caracteres). Apague parte dele na aba Treino (Avançado)."
-            val nodes = tree.addRepresentatives(Importer.speakerBlocks(raw), 20)
-            return "Absorvido: " + lines.count { it.isNotEmpty() } + " falas (+" + chars + " caracteres, sem os nomes) e " + nodes +
-                " nós novos. A osmose treina sozinha com o app aberto."
+            return "Absorvido: " + lines.count { it.isNotEmpty() } + " falas (+" + chars +
+                " caracteres, sem os nomes). A osmose treina os pesos sozinha com o app aberto."
         }
         var blocks = Importer.massBlocks(raw, "")
         if (blocks.isEmpty() && raw.trim().length >= 3) {
@@ -400,9 +389,8 @@ class Osmose(
         if (blocks.isEmpty()) return "Não encontrei texto aproveitável."
         val chars = lab.addCorpus(blocks)
         if (chars == 0) return "O corpus está cheio (8 milhões de caracteres). Apague parte dele na aba Treino (Avançado)."
-        val nodes = tree.addRepresentatives(blocks, 15)
-        return "Absorvido: " + blocks.size + " trechos (+" + chars + " caracteres) e " + nodes +
-            " nós novos. A osmose treina sozinha com o app aberto."
+        return "Absorvido: " + blocks.size + " trechos (+" + chars +
+            " caracteres). A osmose treina os pesos sozinha com o app aberto."
     }
 
     // ------------------------------------------------------------------ conversa (resposta única)
@@ -442,66 +430,29 @@ class Osmose(
     }
 
     /**
-     * Uma resposta só. A árvore escolhe o galho do assunto (vetor de galho do transformer) e o transformer
-     * continua o diálogo recente. Enquanto o modelo ainda está imaturo, a resposta vem da memória da árvore.
-     * O que você escreve vira treino (osmose); afirmações viram nós.
+     * Uma resposta só, escrita pelo transformer a partir do diálogo recente. v11: não existe árvore nem memória de
+     * textos; tudo que a IA sabe está nos pesos. O que você escreve vira texto de treino (osmose).
      */
     fun chatTurn(text: String): String {
         val t = text.trim()
         if (t.isEmpty()) return ""
         val h = db.chatHistory(9).toMutableList()
         if (h.isNotEmpty() && h.last().first && h.last().second == t) h.removeAt(h.size - 1)
-        val found = tree.ask(t, 3).filter { it.second >= 0.15f }
-        val best = found.firstOrNull()
-        val question = t.contains("?")
 
         // osmose: o que você escreve vira texto de treino (uma linha "@u", separada por linha vazia)
         lab.addCorpus(listOf("", TU + clip(t, 160)))
 
-        var newId = -1L
-        if (!question && (best == null || best.second < 0.85f)) {
-            newId = tree.learn(t)
-            if (newId > 0) lab.learnInBackground(newId)
-        }
-
-        // aprendizado instantâneo: pergunta parecida com algo que a árvore já guarda é respondida com isso, sem esperar treino
-        val direct = question && best != null && best.second >= DIRECT_SIM
-        if (best != null && best.second >= Tree.MIN_SIM) {
-            try {
-                db.bumpHit(best.first.id)
-            } catch (e: Throwable) {
-            }
-        }
-
         val g = lab.gpt
-        val mature = g.step >= 300 && g.lastLoss.isFinite() && g.lastLoss < 1.9f
-        var reply = ""
-        if (mature && !direct) {
-            val nodeId = if (best != null && best.second >= Tree.MIN_SIM) best.first.id else -1L
-            reply = cleanReply(lab.generateChat(nodeId, buildPrompt(h, t)))
-        }
-
+        val reply = cleanReply(lab.generateChat(-1L, buildPrompt(h, t)))
         val sb = StringBuilder()
-        if (direct && best != null) {
-            sb.append("Lembro disto: ").append(tree.tidy(best.first.content, 300))
-        } else if (reply.isNotEmpty()) {
-            sb.append(reply)
-        } else if (question && best != null) {
-            sb.append("Lembro disto: ").append(tree.tidy(best.first.content, 300))
-        } else if (newId > 0) {
-            sb.append("Anotado.")
-        } else {
-            sb.append("Hum… ainda não sei responder isso.")
-        }
-        if (!mature && !direct) {
+        sb.append(if (reply.isNotEmpty()) reply else "…")
+        val mature = g.step >= 300 && g.lastLoss.isFinite() && g.lastLoss < 1.9f
+        if (!mature) {
             sb.append("\n(Ainda estou aprendendo a conversar: ").append(g.step)
-                .append(" passos. Deixe a osmose ligada ou importe conversas.)")
+                .append(" passos. Isto é o que os meus pesos produzem hoje.)")
         }
         if (detail) {
-            sb.append("\n— galho: ")
-            if (best != null) sb.append(tree.tidy(best.first.title, 40)).append(" (").append((best.second * 100).toInt()).append("%)")
-            else sb.append("nenhum")
-            sb.append(" | passos ").append(g.step).append(" | perda ")
+            sb.append("\n— passos ").append(g.step).append(" | perda ")
                 .append(if (g.lastLoss.isNaN()) "—" else "%.2f".format(g.lastLoss))
         }
         return sb.toString()
@@ -509,8 +460,9 @@ class Osmose(
 
     /**
      * ✏️: o usuário diz qual seria a resposta certa. history[index] é a resposta errada da IA e a pergunta é a
-     * mensagem do usuário logo antes. A correção pesa mais que o 👍 (5 cópias no treino) e vira um nó da árvore,
-     * então uma pergunta parecida já é respondida certo na hora, sem esperar o treino.
+     * mensagem do usuário logo antes. v11: a correção treina os PESOS na hora (até o modelo dar alta probabilidade à
+     * resposta certa) e também entra 5 vezes no corpus, para os treinos seguintes continuarem revendo. Devolve um
+     * relatório com a probabilidade antes e depois e a resposta atual do modelo.
      */
     fun correct(history: List<Pair<Boolean, String>>, index: Int, right: String): String {
         if (index <= 0 || index >= history.size || history[index].first) return ""
@@ -527,9 +479,26 @@ class Osmose(
         }
         lab.addCorpus(blocks)
         addPersonal(qc, ac)
-        val id = tree.learn(qc + " — " + ac)
-        if (id > 0) lab.learnInBackground(id, 24)
-        return "Corrigido."
+        manual.set(true)
+        pauseNow()
+        hold(true)
+        try {
+            val r = lab.fitCorrection(qc, ac)
+                ?: return "Essa correção é longa demais para o contexto do modelo. Use uma resposta mais curta."
+            val before = "%.0f".format(r[0] * 100f)
+            val after = "%.0f".format(r[1] * 100f)
+            val prompt = buildPrompt(history.subList(0, index - 1), qc)
+            val now = cleanReply(lab.generateChat(-1L, prompt, 90, 0.05f))
+            val sb = StringBuilder()
+            sb.append("Pesos ajustados em ").append(r[2].toInt()).append(" passos. Chance da resposta certa (por letra): ")
+                .append(before).append("% → ").append(after).append("%.")
+            sb.append("\nAgora ela responde: ").append(if (now.isEmpty()) "…" else now)
+            if (r[1] < 0.5f) sb.append("\nAinda não fixou bem. Corrija de novo ou deixe a osmose treinar mais.")
+            return sb.toString()
+        } finally {
+            hold(false)
+            manual.set(false)
+        }
     }
 
     /** 👍: guarda este trecho do diálogo (3 cópias, para pesar mais no treino). history[index] é a resposta da IA. */

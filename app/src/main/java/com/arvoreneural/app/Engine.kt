@@ -8,11 +8,9 @@ import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.core.content.ContextCompat
-import com.arvoreneural.app.ai.HashEmbedder
 import com.arvoreneural.app.ai.MiniLab
 import com.arvoreneural.app.ai.Osmose
 import com.arvoreneural.app.ai.Sizes
-import com.arvoreneural.app.ai.Tree
 import com.arvoreneural.app.ai.miniSelfTest
 import com.arvoreneural.app.data.Db
 import kotlinx.coroutines.CoroutineScope
@@ -40,7 +38,6 @@ class TState {
  */
 object Engine {
     lateinit var db: Db
-    lateinit var tree: Tree
     lateinit var lab: MiniLab
     lateinit var osmose: Osmose
     @Volatile var ready = false
@@ -60,7 +57,7 @@ object Engine {
     var learnText by mutableStateOf("")
     var osmoseMsg by mutableStateOf("")
     var backupMsg by mutableStateOf("")
-    var treeMsg by mutableStateOf("")
+    var notice by mutableStateOf("")
     var selfTestMsg by mutableStateOf("")
     var scriptPy by mutableStateOf(ScriptLab.DEFAULT_PY)
     var scriptJs by mutableStateOf(ScriptLab.DEFAULT_JS)
@@ -76,7 +73,6 @@ object Engine {
         if (ready) return
         appCtx = ctx.applicationContext
         val d = Db(appCtx)
-        val tr = Tree(d, HashEmbedder())
         // tamanho do modelo: se a tentativa anterior com um tamanho grande não terminou (app morto por falta
         // de memória), volta ao Mini para o app não ficar preso num ciclo de falhas
         val sp = appCtx.getSharedPreferences("arvore_prefs", Context.MODE_PRIVATE)
@@ -98,11 +94,9 @@ object Engine {
         }
         sp.edit().putInt("size_trying", -1).commit()
         size = sz
-        tr.lab = l
         db = d
-        tree = tr
         lab = l
-        osmose = Osmose(appCtx, d, tr, l)
+        osmose = Osmose(appCtx, d, l)
         osmose.start()
         osmose.seedIfNeeded()
         scriptPy = sp.getString("script_py", ScriptLab.DEFAULT_PY) ?: ScriptLab.DEFAULT_PY
@@ -173,6 +167,7 @@ object Engine {
     fun send(text: String) {
         val tx = text.trim()
         if (tx.isEmpty()) return
+        notice = ""
         msgs.add(Msg(true, tx))
         pending++
         osmose.hold(true)
@@ -206,7 +201,20 @@ object Engine {
     fun correct(idx: Int, right: String) {
         liked = liked + idx
         val snap = msgs.map { it.fromUser to it.text }
-        scope.launch(Dispatchers.IO) { osmose.correct(snap, idx, right) }
+        notice = "⏳ Treinando os pesos com a sua correção…"
+        pending++
+        scope.launch(Dispatchers.IO) {
+            val r = try {
+                osmose.correct(snap, idx, right)
+            } catch (e: Throwable) {
+                "Erro ao corrigir: " + (e.message ?: e.javaClass.simpleName)
+            }
+            notice = if (r.isEmpty()) "" else "✏️ " + r
+            withContext(Dispatchers.Main) {
+                pending--
+                version++
+            }
+        }
     }
 
     fun like(idx: Int) {

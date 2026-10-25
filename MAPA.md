@@ -2,6 +2,15 @@
 
 > Como retomar com o Claude: envie este arquivo no início de uma conversa nova e diga em qual etapa você está.
 
+
+## v11.0 (25/10/2026) — árvore de nós removida; correção treina os pesos
+- **Por quê:** a árvore respondia "Lembro disto: ..." por semelhança de palavras e a correção ✏️ virava um nó. Isso dava a impressão de que o modelo aprendia, mas a resposta vinha de um arquivo de textos, não dos pesos.
+- **Agora:** toda resposta é escrita pelo transformer (Sayoto). Se ele ainda não sabe, mostra o que os pesos produzem (e um aviso), sem recorrer a texto guardado.
+- **✏️ Corrigir:** `Osmose.correct` guarda a correção no corpus (5 cópias) e chama `MiniLab.fitCorrection`: até 60 passos de treino nos pesos (6 cópias da correção + 2 trechos do corpus por passo), parando quando a chance por letra da resposta certa chega a 70%. O app mostra "chance antes → depois" e a resposta atual do modelo (quase gulosa, temperatura 0,05) numa faixa acima da caixa de mensagem (`Engine.notice`).
+- **Removido:** `ai/Tree.kt`, aba Árvore, botões "Cuidar da árvore", nós nas sementes/importações, resposta direta ("Lembro disto"), nós como documentos de treino.
+- **Mantido de propósito:** o tensor `node` (vetores de galho) continua no tamanho do modelo, sem uso, para não perder os pesos já treinados. A tabela `nodes` continua no banco; o botão "Apagar nós antigos" (aba Treino › Avançado) limpa. `Embedder.kt` (HashEmbedder) ficou sem uso.
+- **Não verificado:** o código não foi compilado pela IA. Confirmar o build no GitHub Actions.
+
 ## Objetivo
 App Android nativo que (1) organiza conhecimento numa árvore, (2) usa modelo de linguagem leve no celular e (3) analisa/prevê dados (ex.: finanças). Aprende em tempo real pela interação e por arquivos de texto. APK compilado pelo GitHub Actions.
 
