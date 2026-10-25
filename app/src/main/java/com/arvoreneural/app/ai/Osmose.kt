@@ -125,6 +125,11 @@ class Osmose(
             }
         } catch (e: Throwable) {
         }
+        lab.persPairs = loadPersonal()
+        lab.onMeasure = { st, v, n, p -> recordMeasure(st, v, n, p) }
+        lab.onReset = { clearHistory() }
+        val oldHist = prefs.getString("hist", "") ?: ""
+        if (oldHist.isNotEmpty()) refreshProgress(oldHist.split(';'))
         val th = Thread { loop() }
         th.isDaemon = true
         th.start()
@@ -268,6 +273,95 @@ class Osmose(
 
     /** Desde quando a árvore conta quantas vezes cada nó foi usado (para saber o que nunca é usado). */
     fun hitsSince(): Long = prefs.getLong("hits_since", 0L)
+
+    // ------------------------------------------------------------------ correções e histórico de progresso
+
+    private fun loadPersonal(): List<Pair<String, String>> {
+        val raw = prefs.getString("pers_eval", "") ?: ""
+        val out = ArrayList<Pair<String, String>>()
+        for (ln in raw.split('\n')) {
+            val k = ln.indexOf('\t')
+            if (k > 0 && k < ln.length - 1) out.add(Pair(ln.substring(0, k), ln.substring(k + 1)))
+        }
+        return out
+    }
+
+    /** Guarda a pergunta corrigida (até 60; a mesma pergunta corrigida de novo troca a resposta antiga). */
+    @Synchronized
+    private fun addPersonal(q: String, a: String) {
+        val cq = q.replace('\t', ' ').replace('\n', ' ')
+        val ca = a.replace('\t', ' ').replace('\n', ' ')
+        val list = ArrayList<Pair<String, String>>()
+        for (p in loadPersonal()) if (p.first != cq) list.add(p)
+        list.add(Pair(cq, ca))
+        while (list.size > 60) list.removeAt(0)
+        val sb = StringBuilder()
+        for (p in list) {
+            if (sb.isNotEmpty()) sb.append('\n')
+            sb.append(p.first).append('\t').append(p.second)
+        }
+        prefs.edit().putString("pers_eval", sb.toString()).apply()
+        lab.persPairs = list
+    }
+
+    /** Uma linha por medição: hora, passos, erro em texto novo, nota fixa, nota das correções (até 200 linhas). */
+    @Synchronized
+    private fun recordMeasure(step: Int, v: Float, nota: Float, pers: Float) {
+        val old = prefs.getString("hist", "") ?: ""
+        val items = ArrayList<String>()
+        if (old.isNotEmpty()) items.addAll(old.split(';'))
+        if (items.isNotEmpty() && items[items.size - 1].split(',').getOrNull(1) == step.toString()) {
+            items.removeAt(items.size - 1)
+        }
+        items.add(System.currentTimeMillis().toString() + "," + step + "," + v + "," + nota + "," + pers)
+        while (items.size > 200) items.removeAt(0)
+        prefs.edit().putString("hist", items.joinToString(";")).apply()
+        refreshProgress(items)
+    }
+
+    private fun clearHistory() {
+        prefs.edit().remove("hist").apply()
+        lab.progressText = ""
+    }
+
+    /** Monta o resumo "como a IA evoluiu" que aparece em Saúde do modelo. */
+    private fun refreshProgress(items: List<String>) {
+        val notas = ArrayList<Float>()
+        val erros = ArrayList<Float>()
+        var firstStep = -1
+        var lastStep = 0
+        for (row in items) {
+            val p = row.split(',')
+            if (p.size < 5) continue
+            val st = p[1].toIntOrNull() ?: continue
+            val v = p[2].toFloatOrNull() ?: Float.NaN
+            val n = p[3].toFloatOrNull() ?: Float.NaN
+            if (firstStep < 0) firstStep = st
+            lastStep = st
+            if (!n.isNaN()) notas.add(n)
+            if (!v.isNaN()) erros.add(v)
+        }
+        if (notas.size < 2) {
+            lab.progressText = ""
+            return
+        }
+        var best = notas[0]
+        for (n in notas) if (n > best) best = n
+        val sb = StringBuilder()
+        sb.append("Evolução (").append(notas.size).append(" medições, passos ").append(firstStep)
+            .append(" a ").append(lastStep).append("): nota ")
+            .append("%.0f".format(notas[0])).append(" → ").append("%.0f".format(notas[notas.size - 1]))
+            .append(" (melhor ").append("%.0f".format(best)).append(")")
+        if (erros.size >= 2) {
+            sb.append("; erro em texto novo ").append("%.2f".format(erros[0])).append(" → ")
+                .append("%.2f".format(erros[erros.size - 1]))
+        }
+        val from = maxOf(0, notas.size - 8)
+        val last = ArrayList<String>()
+        for (k in from until notas.size) last.add("%.0f".format(notas[k]))
+        sb.append("\nÚltimas notas: ").append(last.joinToString(", "))
+        lab.progressText = sb.toString()
+    }
 
     // ------------------------------------------------------------------ absorver textos
 
@@ -432,6 +526,7 @@ class Osmose(
             blocks.add(TA + ac)
         }
         lab.addCorpus(blocks)
+        addPersonal(qc, ac)
         val id = tree.learn(qc + " — " + ac)
         if (id > 0) lab.learnInBackground(id, 24)
         return "Corrigido."

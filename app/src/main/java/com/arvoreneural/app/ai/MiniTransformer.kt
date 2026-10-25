@@ -902,6 +902,19 @@ class MiniGpt(val cfg: MiniGptConfig) {
         return bb.array()
     }
 
+    /** Cópia dos pesos, para voltar a eles se um treino piorar o modelo. */
+    fun snapshot(): FloatArray = w.copyOf()
+
+    /** Volta aos pesos copiados e zera a memória do AdamW. false = o tamanho mudou (o modelo cresceu) e não dá. */
+    fun restore(s: FloatArray): Boolean {
+        if (s.size != w.size) return false
+        System.arraycopy(s, 0, w, 0, s.size)
+        Arrays.fill(am, 0f)
+        Arrays.fill(av, 0f)
+        adamT = 0
+        return true
+    }
+
     fun save(db: Db) {
         db.saveModel(meta(), w)
     }
@@ -1035,6 +1048,30 @@ class MiniLab(private val db: Db, val size: Int = 0) {
     /** Pares (pergunta, resposta) fixos para medir a qualidade; carregados de assets/avaliacao.txt. */
     @Volatile var evalPairs: List<Pair<String, String>> = emptyList()
 
+    /** Perguntas e respostas que o usuário corrigiu (✏️): medem se a IA aprendeu o que ele ensinou. */
+    @Volatile var persPairs: List<Pair<String, String>> = emptyList()
+    @Volatile var personalQuality = Float.NaN
+
+    /** Resumo do histórico de progresso (a Osmose guarda o histórico no aparelho e preenche isto). */
+    @Volatile var progressText = ""
+
+    /** Chamado a cada medição: (passos, erro em texto novo, nota nas perguntas fixas, nota nas correções). */
+    @Volatile var onMeasure: ((Int, Float, Float, Float) -> Unit)? = null
+    @Volatile var onReset: (() -> Unit)? = null
+
+    // Último ponto bom dos pesos: se um treino estragar o modelo, voltamos a ele (não existe no tamanho Grande: faltaria memória).
+    private var snap: FloatArray? = null
+    private var snapNota = Float.NaN
+    private var snapVal = Float.NaN
+    private var snapPers = Float.NaN
+    private var cooldownUntil = 0
+    private var badRolls = 0
+    @Volatile var rollbacks = 0
+    @Volatile var lastRollback = ""
+
+    /** Erro recente de cada nó (por letra): os nós que a IA ainda erra mais são sorteados mais vezes no treino. */
+    private val docLoss = HashMap<Long, Float>()
+
     fun validate(): Float {
         val corp = corpusTokens()
         val t = gpt.cfg.t
@@ -1061,8 +1098,7 @@ class MiniLab(private val db: Db, val size: Int = 0) {
     }
 
     /** Nota de 0 a 100: probabilidade média (geométrica) que o modelo dá a cada letra das respostas certas. */
-    fun measureQuality(): Float {
-        val pairs = evalPairs
+    private fun notaOf(pairs: List<Pair<String, String>>): Float {
         if (pairs.isEmpty()) return Float.NaN
         val t = gpt.cfg.t
         val sys = sysLine()
@@ -1086,11 +1122,21 @@ class MiniLab(private val db: Db, val size: Int = 0) {
             }
         }
         if (chars == 0) return Float.NaN
-        val nota = 100f * exp(-lossSum / chars)
+        return 100f * exp(-lossSum / chars)
+    }
+
+    fun measureQuality(): Float {
+        personalQuality = notaOf(persPairs)
+        val nota = notaOf(evalPairs)
+        if (nota.isNaN()) return Float.NaN
         quality = nota
         synchronized(qualityLog) {
             qualityLog.add(gpt.step.toString() + ": " + "%.0f".format(nota))
             if (qualityLog.size > 6) qualityLog.removeAt(0)
+        }
+        try {
+            onMeasure?.invoke(gpt.step, valLoss, nota, personalQuality)
+        } catch (e: Throwable) {
         }
         return nota
     }
@@ -1124,6 +1170,110 @@ class MiniLab(private val db: Db, val size: Int = 0) {
             }
         }
         measureQuality()
+        guardOrCheckpoint()
+        try {
+            refreshDocLoss()
+        } catch (e: Throwable) {
+        }
+    }
+
+    /**
+     * Guarda o último ponto bom dos pesos. Se um treino estragar o modelo (perda inválida, ou a nota nas perguntas
+     * fixas despencar sem o erro em texto novo nem as suas correções melhorarem), volta a esse ponto.
+     * Depois de duas voltas seguidas aceita a queda: o texto novo pode estar mudando o modelo de propósito.
+     */
+    private fun guardOrCheckpoint() {
+        if (size >= 2) return
+        val nota = quality
+        val v = valLoss
+        val pers = personalQuality
+        val broken = gpt.step > 0 && !gpt.lastLoss.isFinite()
+        val s = snap
+        if (!broken && gpt.step < cooldownUntil) return
+        val notaDrop = !nota.isNaN() && !snapNota.isNaN() && nota < snapNota * 0.75f && nota < snapNota - 3f
+        val valWorse = v.isNaN() || snapVal.isNaN() || v > snapVal * 1.05f
+        val persUp = !pers.isNaN() && !snapPers.isNaN() && pers > snapPers + 2f
+        if (s != null && (broken || (notaDrop && valWorse && !persUp))) {
+            if (!broken && badRolls >= 2) {
+                badRolls = 0
+                snap = null
+                lastRollback = "aceitei a queda (o texto novo mudou o modelo)"
+            } else {
+                val ok = synchronized(lock) { gpt.restore(s) }
+                if (ok) {
+                    rollbacks++
+                    badRolls++
+                    cooldownUntil = gpt.step + 400
+                    lastRollback = if (broken) "perda inválida"
+                    else "nota caiu de " + "%.0f".format(snapNota) + " para " + "%.0f".format(nota)
+                    emaLoss = Float.NaN
+                    refLoss = Float.NaN
+                    if (!frozen) synchronized(lock) { gpt.save(db) }
+                    return
+                }
+                snap = null
+            }
+        }
+        if (broken) return
+        val better = nota.isNaN() || snapNota.isNaN() || nota >= snapNota - 3f || persUp ||
+            (!v.isNaN() && !snapVal.isNaN() && v <= snapVal)
+        if (snap == null || better) {
+            synchronized(lock) { takeSnapshot() }
+            snapNota = nota
+            snapVal = v
+            snapPers = pers
+            badRolls = 0
+        }
+    }
+
+    private fun takeSnapshot() {
+        val cur = snap
+        if (cur != null && cur.size == gpt.w.size) {
+            System.arraycopy(gpt.w, 0, cur, 0, cur.size)
+        } else {
+            snap = gpt.snapshot()
+        }
+    }
+
+    /** Mede o erro de uma janela de cada nó (até 48 nós por vez) para saber quais a IA ainda erra mais. */
+    private fun refreshDocLoss() {
+        val ds = docs()
+        if (ds.isEmpty()) return
+        val t = gpt.cfg.t
+        val rnd = Random(gpt.step.toLong())
+        val picks = ArrayList<Doc>()
+        if (ds.size <= 48) {
+            picks.addAll(ds)
+        } else {
+            for (k in 0 until 48) picks.add(ds[rnd.nextInt(ds.size)])
+        }
+        synchronized(lock) {
+            for (d in picks) {
+                val nn = min(t, d.ids.size - 1)
+                if (nn < 2) continue
+                val x = d.ids.copyOfRange(0, nn)
+                val y = d.ids.copyOfRange(1, nn + 1)
+                val l = gpt.lossOf(x, y, d.slots) / nn
+                if (l.isFinite()) synchronized(docLoss) { docLoss.put(d.id, l) }
+            }
+        }
+    }
+
+    /** Sorteia um nó: quanto maior o erro recente, maior a chance (todos mantêm uma chance mínima; nó novo conta como difícil). */
+    private fun pickDoc(docs: List<Doc>, rnd: Random): Doc {
+        val known = synchronized(docLoss) { HashMap(docLoss) }
+        if (known.isEmpty()) return docs[rnd.nextInt(docs.size)]
+        var mean = 0f
+        for (x in known.values) mean += x
+        mean = mean / known.size.toFloat()
+        var total = 0f
+        for (d in docs) total += (known[d.id] ?: (mean * 2f)) + 0.25f * mean + 0.001f
+        var r = rnd.nextFloat() * total
+        for (d in docs) {
+            r -= (known[d.id] ?: (mean * 2f)) + 0.25f * mean + 0.001f
+            if (r <= 0f) return d
+        }
+        return docs[docs.size - 1]
     }
 
     /** true = a osmose deve esperar. Volta sozinho quando chega texto novo (+10% no corpus). */
@@ -1148,6 +1298,15 @@ class MiniLab(private val db: Db, val size: Int = 0) {
         if (quality.isNaN()) sb.append("—") else sb.append("%.0f".format(quality)).append("/100")
         val log = synchronized(qualityLog) { ArrayList(qualityLog) }
         if (log.size > 1) sb.append("  [").append(log.joinToString(" | ")).append("]")
+        if (!personalQuality.isNaN()) {
+            sb.append("\nO que você corrigiu (✏️): ").append("%.0f".format(personalQuality)).append("/100 (")
+                .append(persPairs.size).append(" correções)")
+        }
+        if (progressText.isNotEmpty()) sb.append("\n").append(progressText)
+        if (rollbacks > 0) {
+            sb.append("\n↩️ Voltei ao ponto anterior ").append(rollbacks)
+                .append("x porque um treino piorou o modelo (último motivo: ").append(lastRollback).append(").")
+        }
         if (overfit) sb.append("\n⚠️ Está decorando: o erro em texto novo subiu. Treino automático em pausa até chegar mais texto.")
         return sb.toString()
     }
@@ -1317,7 +1476,7 @@ class MiniLab(private val db: Db, val size: Int = 0) {
                     continue
                 }
             }
-            val d = if (focus != null && b % 2 == 0) focus else docs[rnd.nextInt(docs.size)]
+            val d = if (focus != null && b % 2 == 0) focus else pickDoc(docs, rnd)
             val len = d.ids.size
             val nn = min(t, len - 1)
             val start = rnd.nextInt(len - nn)
@@ -1386,7 +1545,22 @@ class MiniLab(private val db: Db, val size: Int = 0) {
         overfit = false
         badEvals = 0
         quality = Float.NaN
+        personalQuality = Float.NaN
+        snap = null
+        snapNota = Float.NaN
+        snapVal = Float.NaN
+        snapPers = Float.NaN
+        badRolls = 0
+        cooldownUntil = 0
+        rollbacks = 0
+        lastRollback = ""
+        progressText = ""
+        synchronized(docLoss) { docLoss.clear() }
         synchronized(qualityLog) { qualityLog.clear() }
+        try {
+            onReset?.invoke()
+        } catch (e: Throwable) {
+        }
     }
 }
 

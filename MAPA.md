@@ -86,6 +86,11 @@ App Android nativo que (1) organiza conhecimento numa árvore, (2) usa modelo de
   - `.gitignore` ignora `__pycache__/` e `*.pyc`; o `.pyc` solto que vinha no zip foi removido.
 - [x] 10.3 v10.3 — primeiro build real da v10.x: Chaquopy 16.0.0 + NumPy 1.26.2 instalaram sem erro. O único erro do compilador era `MiniTransformer.kt:383` (`fTmp[e] /= nn`, Float dividido por Int); trocado por `fTmp[e] = fTmp[e] / nn.toFloat()`.
 - [x] 10.4 v10.4 — ✏️ corrigir: abaixo de cada resposta da IA há o botão "corrigir". Você digita a resposta certa e ela (1) entra 5 vezes no corpus de treino, (2) vira um nó da árvore (pergunta parecida já responde certo na hora) e (3) dispara 24 passos de treino em segundo plano. Código: `Osmose.correct`, `Engine.correct`, diálogo no chat da `MainActivity`.
+- [x] 10.5 v10.5 — aprender e melhorar a cada treino e a cada interação:
+  1. Nota das suas correções: cada ✏️ corrigir entra numa lista pessoal (até 60, guardada no aparelho) e a aba Treino > Saúde do modelo mostra "O que você corrigiu: N/100".
+  2. Histórico de progresso salvo (até 200 medições): "Evolução: nota X → Y (melhor Z); erro em texto novo A → B" e as últimas 8 notas.
+  3. Voltar ao ponto bom: a cada 200 passos o app guarda os pesos; se o treino gerar perda inválida ou a nota cair forte (e o erro em texto novo e as suas correções não melhorarem), volta aos pesos anteriores. Depois de 2 voltas seguidas aceita a queda. Não existe no tamanho Grande (memória).
+  4. Mais treino no que erra: a cada 200 passos mede o erro de até 48 nós e passa a sortear mais os nós mais difíceis (todos mantêm chance mínima; nó novo conta como difícil).
 - [ ] 8. Polimento: ícone, gráfico da série, busca por ramo, cache de atenção (KV) para responder mais rápido
 
 ## Arquivos
