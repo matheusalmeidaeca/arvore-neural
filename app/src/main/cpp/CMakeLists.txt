@@ -17,8 +17,8 @@ set(LLAMA_BUILD_SERVER OFF CACHE BOOL "" FORCE)
 set(LLAMA_CURL OFF CACHE BOOL "" FORCE)
 set(GGML_OPENMP OFF CACHE BOOL "" FORCE)
 set(GGML_NATIVE OFF CACHE BOOL "" FORCE)
-# Instruções do processador ARM. O app/build.gradle.kts pode trocar via -DGGML_CPU_ARM_ARCH=...
-set(GGML_CPU_ARM_ARCH "armv8.2-a+dotprod" CACHE STRING "")
+# Instruções do processador ARM: "armv8-a" roda em qualquer celular 64 bits (mais lento que dotprod, mas não trava). O app/build.gradle.kts pode trocar via -DGGML_CPU_ARM_ARCH=...
+set(GGML_CPU_ARM_ARCH "armv8-a" CACHE STRING "")
 
 # Mesmo no APK de depuração a parte nativa precisa ser otimizada (senão fica lentíssima).
 set(CMAKE_C_FLAGS_DEBUG "-O3 -DNDEBUG" CACHE STRING "" FORCE)

@@ -3,6 +3,12 @@
 > Como retomar com o Claude: envie este arquivo no início de uma conversa nova e diga em qual etapa você está.
 
 
+## v11.3 (26/10/2026) — correção do fechamento ao responder
+- **Sintoma (vídeo do usuário):** Qwen2.5-3B (qwen2 3B Q4_K_M, 2002 MB) carrega ("Cérebro pronto"), mas o app fecha ao responder "Oi". Carregar não executa as contas do modelo; responder sim. Isso aponta para instrução de CPU incompatível (SIGILL) na compilação `armv8.2-a+dotprod`.
+- **Mudança:** `-DGGML_CPU_ARM_ARCH=armv8-a` (genérico, roda em qualquer ARM 64 bits; mais lento) no gradle e no CMake.
+- **Também:** `<think>` vazio só entra quando o modelo é Qwen3 em diante (detecção pelo texto de descrição do GGUF); Qwen2.5 recebe ChatML puro. O app grava um marcador `gerando.flag` durante a resposta; se fechar no meio, na próxima abertura a tela avisa.
+- **Não verificado:** a causa é hipótese; o marcador ajuda a confirmar.
+
 ## v11.2 (25/10/2026) — Sayoto removido; o Cérebro (GGUF) fica sozinho
 - **Por quê:** o mini transformer (Sayoto) carregava pesos e treinava em segundo plano, competindo por memória com o GGUF. O app fechava quando o Qwen respondia.
 - **Removido:** `ai/MiniTransformer.kt`, `ai/Osmose.kt`, `ai/Importer.kt`, `ai/Embedder.kt`, `TrainService.kt` (serviço de treino), abas Conversa e Treino (incluindo o laboratório de scripts na tela), receber texto compartilhado (WhatsApp), backup pela tela, sementes e `exemplo_abecedario.txt`. Manifest sem serviço, sem permissões e sem filtro de compartilhar.

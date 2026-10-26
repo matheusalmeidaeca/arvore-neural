@@ -12,8 +12,8 @@ android {
         applicationId = "com.arvoreneural.app"
         minSdk = 26
         targetSdk = 34
-        versionCode = 18
-        versionName = "11.2"
+        versionCode = 19
+        versionName = "11.3"
         // Chaquopy exige abiFilters. Só arm64 (celulares atuais): deixa o APK bem menor.
         ndk { abiFilters += listOf("arm64-v8a") }
         // llama.cpp (C++) compilado junto: ver app/src/main/cpp/CMakeLists.txt
@@ -21,7 +21,7 @@ android {
             cmake {
                 arguments += listOf(
                     "-DANDROID_STL=c++_shared",
-                    "-DGGML_CPU_ARM_ARCH=armv8.2-a+dotprod"
+                    "-DGGML_CPU_ARM_ARCH=armv8-a"
                 )
             }
         }

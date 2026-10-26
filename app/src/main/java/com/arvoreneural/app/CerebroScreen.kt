@@ -113,7 +113,7 @@ fun CerebroScreen() {
                         val t = CerebroState.input.trim()
                         if (t.isNotEmpty()) {
                             CerebroState.input = ""
-                            CerebroState.send(t)
+                            CerebroState.send(ctx, t)
                         }
                     }
                 ) { Text("Enviar") }

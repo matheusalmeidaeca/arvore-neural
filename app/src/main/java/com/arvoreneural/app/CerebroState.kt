@@ -26,6 +26,7 @@ object CerebroState {
     var working by mutableStateOf(false)      // copiando ou carregando
     var generating by mutableStateOf(false)
     var stats by mutableStateOf("")
+    private var crashAviso by mutableStateOf("")
     var input by mutableStateOf("")
     val msgs = mutableStateListOf<Msg>()
 
@@ -37,7 +38,13 @@ object CerebroState {
 
     private fun modelFile(ctx: Context) = File(File(ctx.filesDir, "modelos"), "modelo.gguf")
 
+    private fun flagFile(ctx: Context) = File(ctx.filesDir, "gerando.flag")
+
     fun refresh(ctx: Context) {
+        if (flagFile(ctx).exists()) {
+            flagFile(ctx).delete()
+            crashAviso = "O app fechou durante a última resposta. Isso costuma ser instrução do processador incompatível com o llama.cpp."
+        }
         val f = modelFile(ctx)
         hasFile = f.exists() && f.length() > 0
         if (!loaded && !working) {
@@ -45,6 +52,7 @@ object CerebroState {
             status = if (hasFile) "Modelo guardado${if (nome.isNotEmpty()) ": $nome" else ""}. Toque em Carregar."
             else "Nenhum modelo carregado. Escolha um arquivo .gguf."
         }
+        if (crashAviso.isNotEmpty() && !loaded && !working) status = crashAviso + " " + status
         if (!Cerebro.libOk) status = "A parte nativa (llama.cpp) não foi encontrada neste APK."
     }
 
@@ -156,11 +164,13 @@ object CerebroState {
             sb.append("<|im_start|>").append(if (m.fromUser) "user" else "assistant").append('\n')
             sb.append(m.text).append("<|im_end|>\n")
         }
-        sb.append("<|im_start|>assistant\n<think>\n\n</think>\n\n")
+        sb.append("<|im_start|>assistant\n")
+        // Só os Qwen3 em diante conhecem o bloco de pensamento; o Qwen2.5 e outros não.
+        if (modelInfo.startsWith("qwen3", ignoreCase = true)) sb.append("<think>\n\n</think>\n\n")
         return sb.toString()
     }
 
-    fun send(text: String) {
+    fun send(ctx: Context, text: String) {
         if (!loaded || generating || working) return
         msgs.add(Msg(true, text))
         msgs.add(Msg(false, ""))
@@ -174,6 +184,7 @@ object CerebroState {
             var probN = 0
             val t0 = System.nanoTime()
             try {
+                flagFile(ctx).writeText("1")
                 val prompt = buildPrompt()
                 Cerebro.nativeGenerate(
                     prompt.toByteArray(Charsets.UTF_8), MAX_NEW, 0.7f, 0.9f, Random.nextInt(),
@@ -193,6 +204,7 @@ object CerebroState {
                 val aviso = "⚠️ ${e.message ?: e.javaClass.simpleName}"
                 if (slot < msgs.size) msgs[slot] = Msg(false, if (sb.isEmpty()) aviso else sb.toString() + "\n" + aviso)
             } finally {
+                flagFile(ctx).delete()
                 generating = false
             }
         }
