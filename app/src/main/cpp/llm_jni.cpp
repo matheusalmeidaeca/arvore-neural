@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cmath>
 #include <string>
 #include <vector>
@@ -124,6 +125,16 @@ Java_com_arvoreneural_app_ai_Cerebro_nativeGenerate(JNIEnv *env, jobject, jbyteA
     jmethodID mid = env->GetMethodID(lcls, "onToken", "([BF)Z");
 
     int produced = 0;
+    const auto T0 = std::chrono::steady_clock::now();
+    auto secs = [&]() { return std::chrono::duration<double>(std::chrono::steady_clock::now() - T0).count(); };
+    auto status = [&](const std::string &m) {
+        if (!mid) return;
+        jbyteArray a = env->NewByteArray((jsize) m.size());
+        env->SetByteArrayRegion(a, 0, (jsize) m.size(), reinterpret_cast<const jbyte *>(m.data()));
+        env->CallBooleanMethod(listener, mid, a, (jfloat) -2.0f);
+        env->DeleteLocalRef(a);
+    };
+    status("lendo o prompt: " + std::to_string(n) + " tokens...");
     bool failed = false;
 
     // 4) lê o prompt em pedaços
@@ -133,12 +144,13 @@ Java_com_arvoreneural_app_ai_Cerebro_nativeGenerate(JNIEnv *env, jobject, jbyteA
         if (llama_decode(ctx, b) != 0) { failed = true; break; }
     }
 
+    status("prompt lido em " + std::to_string(secs()) + " s");
     // 5) escreve token a token
     const int nv = llama_vocab_n_tokens(vocab);
     std::string pending;
     while (!failed && !g_stop.load() && produced < maxTokens) {
         llama_token tok = llama_sampler_sample(smpl, ctx, -1);
-        if (llama_vocab_is_eog(vocab, tok)) break;
+        if (llama_vocab_is_eog(vocab, tok)) { status("o modelo encerrou no token " + std::to_string(produced) + " (fim de texto)"); break; }
 
         // probabilidade que o modelo deu a esta palavra (softmax simples dos logits)
         float prob = -1.0f;
@@ -161,6 +173,7 @@ Java_com_arvoreneural_app_ai_Cerebro_nativeGenerate(JNIEnv *env, jobject, jbyteA
             pending.append(buf, (size_t) len);
         }
         produced++;
+        if (produced == 1) status("1o token em " + std::to_string(secs()) + " s");
 
         bool cont = true;
         size_t k = utf8_complete_prefix(pending);

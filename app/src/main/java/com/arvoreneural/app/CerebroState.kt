@@ -189,6 +189,7 @@ object CerebroState {
                 Cerebro.nativeGenerate(
                     prompt.toByteArray(Charsets.UTF_8), MAX_NEW, 0.7f, 0.9f, Random.nextInt(),
                     TokenListener { bytes, prob ->
+                        if (prob == -2f) { stats = String(bytes, Charsets.UTF_8); return@TokenListener true }
                         sb.append(String(bytes, Charsets.UTF_8))
                         n++
                         if (prob >= 0f) { probSum += prob; probN++ }
